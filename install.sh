@@ -740,6 +740,37 @@ cmd_backup() {
   echo "copy it OFF this server now; it contains all secrets."
 }
 
+cmd_restore() {
+  need_root restore
+  local file="${1:-}"
+  [ -n "${file}" ] || die "usage: sudo bash install.sh restore <backup-file.tar.gz>"
+  [ -f "${file}" ] || die "backup file not found: ${file}"
+  tar tzf "${file}" 2>/dev/null | grep -qx "sui-vpn/state.env" \
+    || die "not a sui-vpn backup (no sui-vpn/state.env inside)"
+  if [ -d "${DIR}" ]; then
+    echo "current ${DIR} will be replaced by the backup."
+    read -r -p "Continue? [y/N] " ans
+    case "${ans}" in y|Y) : ;; *) echo "aborted"; return 0 ;; esac
+    systemctl stop sui-panel sui-tunnel sui-panel-tunnel sui-sync.timer 2>/dev/null || true
+  fi
+  tar xzf "${file}" -C "${TARGET_HOME}" \
+    || die "restore failed while extracting"
+  chmod 600 "${STATE}" 2>/dev/null || true
+  # systemd units live outside the backup; on a fresh server run install
+  # first (it keeps the restored state instead of generating a new one).
+  if [ -f "${PANEL_UNIT}" ]; then
+    systemctl daemon-reload
+    systemctl restart sui-panel sui-tunnel sui-panel-tunnel 2>/dev/null || true
+    systemctl enable --now sui-sync.timer >/dev/null 2>&1 || true
+    python3 "${DIR}/sync.py" || echo "sync will retry every 60s"
+    echo "restored ${DIR} from ${file}; services restarted."
+    echo "check: sudo bash install.sh status"
+  else
+    echo "restored ${DIR} from ${file}, but no sui units are installed."
+    echo "run: sudo bash install.sh install   (it keeps the restored state)"
+  fi
+}
+
 cmd_uninstall() {
   need_root uninstall
   systemctl disable --now sui-sync.timer >/dev/null 2>&1 || true
@@ -750,8 +781,27 @@ cmd_uninstall() {
   systemctl daemon-reload
   rm -f "${PTLOG}"
   rm -rf "${DIR}"
-  echo "removed sui units and ${DIR} only. Old test units/files (vpntest-*, ~/vpn-test) and everything else untouched."
-  echo "Note: the Cloudflare Worker + KV namespace were NOT deleted; remove them in the dashboard if wanted."
+  echo "removed sui units and ${DIR} only. Everything else untouched."
+  echo "Note: the Cloudflare Worker + KV namespace were NOT deleted;"
+  echo "remove them in the dashboard if wanted (see README: Uninstall)."
+}
+
+cmd_help() {
+  cat <<'EOF'
+usage: bash install.sh <command>
+  install        full install (panel + tunnels + worker + sync timer)
+  show           panel URL, tunnel URL, fixed subscription URL
+  status         service states + tunnel logs + last sync
+  sync-now       sync clients to the Worker now [--dry-run to preview]
+  deploy-worker  re-upload worker.js to Cloudflare
+  update-sui     replace s-ui with the newest GitHub release
+  panel-on       allow panel access from the internet
+  panel-off      panel reachable only via SSH forward
+  backup         tarball of ~/sui-vpn (contains secrets)
+  restore <file> restore ~/sui-vpn from a backup tarball
+  uninstall      remove the install (Worker + KV stay in Cloudflare)
+  help           show this list
+EOF
 }
 
 case "${1:-install}" in
@@ -764,6 +814,8 @@ case "${1:-install}" in
   panel-on) cmd_panel_on ;;
   panel-off) cmd_panel_off ;;
   backup) cmd_backup ;;
+  restore) shift; cmd_restore "$@" ;;
   uninstall) cmd_uninstall ;;
-  *) echo "usage: bash install.sh [install|show|status|sync-now|deploy-worker|update-sui|panel-on|panel-off|backup|uninstall]" >&2; exit 1 ;;
+  help) cmd_help ;;
+  *) cmd_help >&2; exit 1 ;;
 esac

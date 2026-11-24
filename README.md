@@ -94,32 +94,92 @@ To pass the Cloudflare token without the interactive prompt (e.g. inside
 tmux, where hidden `read` can fail), export `CF_API_TOKEN` and
 `CF_ACCOUNT_ID` before running the installer.
 
-## Using it
+## Management
+
+Every command runs from the install directory on the VPS. `sudo bash
+install.sh help` prints the same list.
+
+### Command reference
+
+| Command | What it does |
+|---|---|
+| `install` | Full install (panel + tunnels + Worker + sync timer). Re-running it is safe: it keeps existing state and only fills in what is missing. |
+| `show` | Panel URL, current tunnel URL, fixed subscription URL, panel login. |
+| `status` | Service states, tunnel URLs, last tunnel log lines, last sync run. Start here when something is wrong. |
+| `sync-now` | Sync clients to the Worker right now (the timer does this every 60 s anyway). |
+| `sync-now --dry-run` | Preview what would sync, including the full links. Writes nothing. |
+| `deploy-worker` | Re-upload `worker.js` to Cloudflare after editing it. |
+| `update-sui` | Replace s-ui with the newest GitHub release. Verifies the new binary runs first and keeps a timestamped backup of the old one. |
+| `panel-on` / `panel-off` | Allow / stop panel access from the internet. Off means the panel is reachable only via SSH forward. |
+| `backup` | Tarball of `~/sui-vpn` (mode 600). Contains every secret — copy it off the server. |
+| `restore <file>` | Restore `~/sui-vpn` from a backup tarball and restart the services. On a fresh server, run `install` afterwards (it keeps the restored state). |
+| `uninstall` | Remove the install from the server (below). |
+| `help` | Show the command list. |
+
+### Users
+
+Open the panel (fixed Worker URL + secret path, or `install.sh
+show`), Clients → add. Set Volume (GB, `0` = unlimited) and Expiry.
+Within ~60 s the sync writes their subscription to the Worker; their
+subscription URL is `https://<worker>.workers.dev/sub/<secret>/<name>`
+— the panel builds this link itself from the Subscription URI the
+installer set, so just copy it from the panel. Volume and expiry are
+enforced by the sync: expired or over-quota users disappear from the
+Worker automatically.
+
+- **Disable / delete a user:** toggle Enable off, or delete the client
+  in the panel. The next sync (≤ 60 s) removes their keys from the
+  Worker, so their subscription stops working. To revoke a leaked
+  link immediately, delete the client and run `sync-now`.
+- **Rename a user:** the old name key is deleted and the new one is
+  published on the next sync. Hand out the new link from the panel.
+- **Update a client app:** in Hiddify / v2rayNG / sing-box, update the
+  remote subscription. The URL never changes, even when the tunnel
+  restarts.
+
+### Logs and health
 
 ```bash
-sudo bash install.sh show        # panel URL, current tunnel link, fixed subscription URL
-sudo bash install.sh status      # service states + tunnel logs
-sudo bash install.sh sync-now    # sync clients to the Worker right now
-sudo bash install.sh sync-now --dry-run   # show what would sync (links included)
-sudo bash install.sh deploy-worker        # re-upload worker.js after editing it
-sudo bash install.sh update-sui           # replace s-ui with the newest GitHub release (backs up the old binary)
-sudo bash install.sh panel-on    # allow panel access from the internet
-sudo bash install.sh panel-off   # panel reachable only via SSH forward
-sudo bash install.sh backup      # tarball of ~/sui-vpn (contains secrets — copy it off-server)
-sudo bash install.sh uninstall   # removes the install (Worker + KV stay in Cloudflare)
+sudo bash install.sh status                 # services + tunnel logs + last sync
+sudo journalctl -u sui-panel -n 50          # panel log
+sudo journalctl -u sui-tunnel -n 50         # tunnel log
+sudo journalctl -u sui-sync.service -n 20   # last sync runs
+curl -s https://<worker>.workers.dev/health   # Worker alive? prints "ok"
+sudo bash install.sh sync-now --dry-run     # what the Worker currently serves
 ```
 
-**Add a user:** open the panel (fixed Worker URL + secret path, or
-`install.sh show`), Clients → add. Set Volume (GB, `0` = unlimited)
-and Expiry. Within ~60 s the sync writes their subscription to the
-Worker; their subscription URL is
-`https://<worker>.workers.dev/sub/<secret>/<name>` — the panel builds
-this link itself from the Subscription URI the installer set, so just
-copy it from the panel. Volume and expiry are enforced by the sync:
-expired or over-quota users disappear from the Worker automatically.
+### Backup and restore
 
-**Update a client:** in Hiddify / v2rayNG / sing-box, update the remote
-subscription. The URL never changes, even when the tunnel restarts.
+```bash
+sudo bash install.sh backup                              # -> ~/sui-vpn-backup-<date>.tar.gz
+sudo bash install.sh restore ~/sui-vpn-backup-<date>.tar.gz
+```
+
+The backup holds `state.env` (panel password, Cloudflare token,
+client UUIDs, subscription secret) and the s-ui database — everything
+needed to rebuild the exact same install with the same subscription
+links. **Copy it off the server**; a backup that only exists on the
+VPS dies with the VPS. To move to a new server: copy the backup over,
+run `install` (it keeps the restored state), then `restore` the file
+— or restore first and `install` after; both orders work.
+
+### Uninstall
+
+```bash
+sudo bash install.sh uninstall
+```
+
+This stops and removes the four systemd units and deletes `~/sui-vpn`
+from the server, and nothing else. The Cloudflare side stays — remove
+it by hand if you want it fully gone:
+
+1. dash.cloudflare.com → Workers & Pages → `sui-sub` → Settings →
+   Delete (this also deletes the `workers.dev` address).
+2. Workers & Pages → KV → `sui-sub` → Delete.
+3. My Profile → API Tokens → `SUI-Panel-Sub` → Delete.
+
+Revoking the token alone already stops all syncing, so step 3 is the
+one that matters most.
 
 ## How it works
 
@@ -181,3 +241,6 @@ Routing / GeoIP rules).
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+See [CHANGELOG.md](CHANGELOG.md) for what's new, and
+[CONTRIBUTING.md](CONTRIBUTING.md) if you want to help improve it.
