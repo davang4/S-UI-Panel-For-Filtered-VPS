@@ -1,0 +1,9 @@
+# Generated on the server at install time — never commit secrets.
+state.env
+sync-state.json
+*.log
+db/
+*.tar.gz
+__pycache__/
+*.pyc
+worker-meta.json
