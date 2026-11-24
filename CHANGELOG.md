@@ -5,6 +5,10 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-24
 
+- `show` now prints the fixed panel address (`Panel (fixed):
+  <worker URL><secret path>`) as its **first** line, so the address
+  you actually use every day is right at the top instead of the
+  rotating direct tunnel URL.
 - **Fresh installs now auto-pick a free Worker/KV name.** A new server
   never silently reuses another server's Worker + KV: the installer
   checks whether the name is taken and takes the next free one

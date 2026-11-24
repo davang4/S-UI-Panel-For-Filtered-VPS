@@ -932,6 +932,11 @@ cmd_show() {
   local u host pu
   u=$(tunnel_url)
   pu=$(panel_tunnel_url)
+  if [ -n "${WORKER_URL:-}" ]; then
+    echo "Panel (fixed): ${WORKER_URL}${PANEL_BASE_PATH:-/app/}"
+  else
+    echo "Panel (fixed): worker not deployed yet (see README fallback)"
+  fi
   if [ -n "${pu}" ]; then
     echo "Panel (internet): ${pu}${PANEL_BASE_PATH:-/app/}"
   else
