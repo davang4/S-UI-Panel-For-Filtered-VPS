@@ -135,6 +135,7 @@ same list.
 | `sync-now --dry-run` | Preview what would sync, including the full links. Writes nothing. |
 | `sync-now --force` | Rewrite everything to KV even if nothing changed locally (use after a Worker/KV move, or when another server overwrote this server's `panel:host`). |
 | `deploy-worker` | Re-upload `worker.js` to Cloudflare after editing it. |
+| `change-subdomain [name]` | Replace the account's workers.dev subdomain with a custom one (it changes the fixed address of every worker on the account; re-run `deploy-worker` on each other server afterwards). |
 | `update-sui` | Replace s-ui with the newest GitHub release. Verifies the new binary runs first and keeps a timestamped backup of the old one. |
 | `panel-on` / `panel-off` | Allow / stop panel access from the internet. Off means the panel is reachable only via SSH forward. |
 | `backup` | Tarball of `~/sui-vpn` (mode 600). Contains every secret — copy it off the server. |
@@ -242,6 +243,22 @@ To choose the names yourself:
 ```bash
 WORKER_NAME=my-panel KV_TITLE=my-panel WORKERS_SUBDOMAIN=myname42 sudo -E bash install.sh install
 ```
+
+The workers.dev subdomain belongs to the Cloudflare **account**, not
+to one server — every worker on the account shares it, and the fixed
+address is always `<worker-name>.<subdomain>.workers.dev` (there is
+no single-label `<name>.workers.dev`). An account that already has a
+subdomain keeps it; to replace it with a custom one, run on any one
+server:
+
+```bash
+sudo sui-vpn change-subdomain myname42
+```
+
+That changes the address of every worker on the account at once, so
+afterwards re-run `sudo sui-vpn deploy-worker` on each other server
+to refresh its stored worker URL (and hand out the new subscription
+links from each panel).
 
 If a requested Worker name is already taken, the installer says so
 and either suggests the next free one (press Enter to take it, when

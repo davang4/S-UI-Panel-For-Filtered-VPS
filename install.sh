@@ -535,11 +535,20 @@ prompt_worker_name() {
   # is the first label of the fixed address, so a shared default would
   # be a fingerprint one filter rule could block for every repo user.
   # Sets WORKER_NAME (and KV_TITLE, unless explicitly requested).
+  # CURRENT_SUBDOMAIN (when set) is shown so the user sees the full
+  # address shape: the address is ALWAYS <worker>.<subdomain>.workers.dev
+  # — the subdomain belongs to the Cloudflare account, the worker name
+  # to this server. There is no single-label <name>.workers.dev.
   local suggestion answer
   suggestion=$(random_name)
+  if [ -n "${CURRENT_SUBDOMAIN:-}" ]; then
+    echo "Your account's workers.dev subdomain is '${CURRENT_SUBDOMAIN}', so the fixed address will be https://<name>.${CURRENT_SUBDOMAIN}.workers.dev"
+    echo "(to change the subdomain itself: sudo sui-vpn change-subdomain)"
+  else
+    echo "Your fixed address will be https://<name>.<subdomain>.workers.dev — you will pick the subdomain next."
+  fi
   if [ -t 0 ]; then
-    echo "Pick a Worker name for this server — it is the first part of your fixed address."
-    echo "Choose something unique (not 'sui-sub'), or press Enter to use ${suggestion}."
+    echo "Pick a Worker name for this server (first part of the address) — something unique, not 'sui-sub' — or press Enter to use ${suggestion}."
     printf 'Worker name (Enter for %s): ' "${suggestion}"
     read -r answer || answer=""
     if [ -z "${answer}" ]; then
@@ -560,6 +569,12 @@ prompt_worker_name() {
   set_state KV_TITLE "${KV_TITLE}"
 }
 
+current_subdomain() {
+  # Print the account's current workers.dev subdomain (or nothing).
+  cf_api GET "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" 2>/dev/null \
+    | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('subdomain',''))" 2>/dev/null
+}
+
 register_subdomain() {
   # Sets SUBDOMAIN (global) to the account's workers.dev subdomain.
   # If the account has none, registers one — an explicit
@@ -567,8 +582,7 @@ register_subdomain() {
   # Never a shared/predictable name: one filter rule on a shared
   # address would block every repo user at once. Returns 0 on success.
   local resp candidate ok tries suggestion answer
-  resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/workers/subdomain")
-  SUBDOMAIN=$(printf '%s' "${resp}" | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('subdomain',''))" 2>/dev/null)
+  SUBDOMAIN=$(current_subdomain)
   [ -n "${SUBDOMAIN}" ] && return 0
   if [ -n "${WORKERS_SUBDOMAIN:-}" ]; then
     candidate="$(printf '%s' "${WORKERS_SUBDOMAIN}" | tr 'A-Z' 'a-z')"
@@ -794,6 +808,7 @@ deploy_worker() {
   # Fresh install, no explicit name: never use a shared default Worker
   # name — it would be the first label of every user's fixed address.
   if [ -z "${STORED_WORKER_NAME}" ] && [ -z "${WORKER_NAME_REQ}" ]; then
+    CURRENT_SUBDOMAIN=$(current_subdomain)
     prompt_worker_name
   fi
 
@@ -906,14 +921,25 @@ EOF
   set_state WORKER_URL "https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev"
   echo "worker URL: https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev"
 
-  # Point the panel's subscription links at the worker (with the secret,
-  # when set): s-ui composes each client's link as subURI + client name,
-  # so this is what makes panel-generated links work without editing.
-  # The panel reads settings from the DB per request; restart it so the
-  # new value is picked up for sure.
+  set_panel_suburi
+  return 0
+}
+
+set_panel_suburi() {
+  # Point the panel's subscription links at this server's worker URL
+  # (with the secret, when set): s-ui composes each client's link as
+  # subURI + client name, so this is what makes panel-generated links
+  # work without editing. Always sets it — a stale subURI after a
+  # worker/subdomain move would keep pointing panel links at the old
+  # address. The panel reads settings from the DB per request; restart
+  # it so the new value is picked up for sure.
+  local sub_uri
   if [ -n "${SUB_SECRET:-}" ]; then
-    local sub_uri="https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev/sub/${SUB_SECRET}/"
-    python3 - "${DBFILE}" "${sub_uri}" <<'PYEOF' || { echo "warning: could not set panel subURI in DB"; return 0; }
+    sub_uri="https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev/sub/${SUB_SECRET}/"
+  else
+    sub_uri="https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev/sub/"
+  fi
+  python3 - "${DBFILE}" "${sub_uri}" <<'PYEOF' || { echo "warning: could not set panel subURI in DB"; return 0; }
 import sqlite3, sys
 db, uri = sys.argv[1], sys.argv[2]
 con = sqlite3.connect(db)
@@ -923,9 +949,55 @@ if cur.rowcount == 0:
 con.commit(); con.close()
 print(f"panel subscription URI set to {uri}")
 PYEOF
-    systemctl restart sui-panel >/dev/null 2>&1 || true
+  systemctl restart sui-panel >/dev/null 2>&1 || true
+}
+
+cmd_change_subdomain() {
+  # change-subdomain [name] — replace the Cloudflare account's
+  # workers.dev subdomain. The subdomain is per-ACCOUNT, so this
+  # changes the fixed address of EVERY worker on the account at once;
+  # each other server must re-run deploy-worker afterwards so its
+  # stored worker URL is refreshed. Use it to drop an old shared or
+  # guessable subdomain (e.g. 'suisub') for a custom one.
+  load_state
+  [ -n "${CF_API_TOKEN:-}" ] || { echo "no Cloudflare token in state; run install first"; return 1; }
+  [ -n "${CF_ACCOUNT_ID:-}" ] || { echo "no Cloudflare account in state; run install first"; return 1; }
+  [ -n "${WORKER_NAME:-}" ] || { echo "no Worker name in state; run install first"; return 1; }
+  local current new_name resp ok suggestion
+  current=$(current_subdomain)
+  echo "current workers.dev subdomain: ${current:-none}"
+  echo "This changes the fixed address of EVERY worker on this Cloudflare account."
+  echo "Afterwards, on each OTHER server on this account, re-run: sudo sui-vpn deploy-worker"
+  if [ -n "${1:-}" ]; then
+    new_name="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+  elif [ -t 0 ]; then
+    suggestion=$(random_name)
+    printf 'new workers.dev subdomain (Enter for %s): ' "${suggestion}"
+    read -r new_name || new_name=""
+    if [ -z "${new_name}" ]; then
+      new_name="${suggestion}"
+    else
+      new_name="$(printf '%s' "${new_name}" | tr 'A-Z' 'a-z')"
+    fi
+  else
+    new_name=$(random_name)
+    echo "no name given; using '${new_name}' (pass a name to choose your own)."
   fi
-  return 0
+  valid_subdomain "${new_name}" || { echo "'${new_name}' is not a valid subdomain (lowercase letters, digits, hyphens; 1-63 chars)."; return 1; }
+  if [ "${new_name}" = "${current}" ]; then
+    echo "already '${new_name}'; nothing to change."
+    return 0
+  fi
+  resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"${new_name}\"}")
+  ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
+  [ "${ok}" = "True" ] || { echo "Cloudflare did not accept '${new_name}': ${resp}"; return 1; }
+  echo "workers.dev subdomain changed: ${current} -> ${new_name}"
+  SUBDOMAIN="${new_name}"
+  set_state WORKER_URL "https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev"
+  echo "new worker URL: https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev"
+  echo "new fixed panel address: https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev${PANEL_BASE_PATH:-/app/}"
+  set_panel_suburi
+  echo "Done. On each OTHER server on this account, re-run: sudo sui-vpn deploy-worker"
 }
 
 worker_fallback_steps() {
@@ -1018,10 +1090,22 @@ cmd_install() {
   python3 "${DIR}/sync.py" || echo "first sync failed (see above); timer will retry every 60s"
   load_state
   run_checks
+  print_save_block
+}
+
+print_save_block() {
+  # The end-of-install summary. The fixed panel address is FIRST — it
+  # is the address the user actually opens every day, and the rotating
+  # direct tunnel URL below it must not be mistaken for it.
   local pu
   pu=$(panel_tunnel_url)
   echo ""
   echo "================= SAVE THESE (shown once) ================="
+  if [ -n "${WORKER_URL:-}" ]; then
+    echo "Panel (fixed): ${WORKER_URL}${PANEL_BASE_PATH:-/app/}"
+  else
+    echo "Panel (fixed): worker not deployed yet; get it with: sudo bash install.sh show"
+  fi
   if [ -n "${pu}" ]; then
     echo "Panel (internet, secret path): ${pu}${PANEL_BASE_PATH}"
   else
@@ -1232,6 +1316,7 @@ usage: bash install.sh <command>
   status         service states + tunnel logs + last sync
   sync-now       sync clients to the Worker now [--dry-run to preview]
   deploy-worker  re-upload worker.js to Cloudflare
+  change-subdomain [name]  replace the account's workers.dev subdomain
   update-sui     replace s-ui with the newest GitHub release
   panel-on       allow panel access from the internet
   panel-off      panel reachable only via SSH forward
@@ -1248,6 +1333,7 @@ case "${1:-install}" in
   status) cmd_status ;;
   sync-now) shift; cmd_sync_now "$@" ;;
   deploy-worker) cmd_deploy_worker ;;
+  change-subdomain) shift; cmd_change_subdomain "$@" ;;
   update-sui) cmd_update_sui ;;
   panel-on) cmd_panel_on ;;
   panel-off) cmd_panel_off ;;

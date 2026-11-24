@@ -5,6 +5,19 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-24
 
+- **New: `change-subdomain [name]` replaces the account's workers.dev
+  subdomain.** The fixed address is always
+  `<worker>.<subdomain>.workers.dev` — the subdomain belongs to the
+  Cloudflare account (all servers on it share it), the worker name to
+  one server; there is no single-label `<name>.workers.dev`. An
+  account that already has a subdomain kept it silently, so a user who
+  wanted the old one gone had no way to change it. The new command
+  changes it, refreshes this server's stored worker URL + panel
+  subURI, and reminds you to re-run `deploy-worker` on each other
+  server. The worker-name prompt now also shows the full address
+  shape (including the current subdomain) so the two parts are never
+  confused again. The SAVE block now prints the fixed panel address
+  as its first line, like `show` already did.
 - **Fix: fresh installs crashed after the worker upload
   (`install.sh: line 915: sub: unbound variable`).** The subdomain
   refactor renamed `sub` to `SUBDOMAIN` but missed the panel subURI

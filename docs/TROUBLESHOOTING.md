@@ -73,6 +73,24 @@ belongs to another server — check `sync.py`'s `server:id` stamp in
 the KV dashboard to confirm which server owns a namespace. See
 README: Multiple servers.
 
+## My address still contains the old subdomain (e.g. suisub)
+
+The fixed address is always `<worker>.<subdomain>.workers.dev` —
+the subdomain belongs to the Cloudflare **account** (every server on
+it shares it), the worker name to one server. An account that already
+has a subdomain keeps it; picking a Worker name does not change it.
+To replace it, run on any one server:
+
+```bash
+sudo sui-vpn change-subdomain myname42
+```
+
+That changes the address of every worker on the account at once, so
+afterwards re-run `sudo sui-vpn deploy-worker` on each other server
+to refresh its stored worker URL, and hand out the new subscription
+links from each panel. (There is no single-label `<name>.workers.dev`
+— Cloudflare always puts the account subdomain in the middle.)
+
 ## First server's fixed address still wrong after the second moved
 
 The sync only writes when something changed *locally*, so a stale
