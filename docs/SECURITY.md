@@ -82,6 +82,30 @@ so it is documented here, not built in.
 - The installer opens no public ports and changes no firewall rules;
   the panel and the inbound bind `127.0.0.1` only.
 
+## Address fingerprinting: why names are custom
+
+Your fixed address is `<worker-name>.<subdomain>.workers.dev`. Both
+labels are chosen per user — the installer asks you for a custom
+Worker name on a fresh install (or takes a random one), and asks for
+a custom workers.dev subdomain the first time an account needs one
+(`WORKERS_SUBDOMAIN` sets it non-interactively). There is no shared
+default name anywhere.
+
+The reason: if every user of this repo had the same address — or the
+same predictable pattern, like `sui-sub.*.workers.dev` or
+`sui-<hex>.workers.dev` — one filter rule on that string would block
+all of them at once. Custom, per-user names mean a censor has to
+discover and block each address individually; there is no single
+string that takes the whole user base down. This does not protect
+against a targeted block of *your* address once it is observed in
+traffic — no naming scheme can — but it removes the bulk-blocking
+failure mode.
+
+Note the same logic applies to the SUB_SECRET: it is random per
+install, never a shared value. And never publish your worker address
+anywhere public (a forum post, a GitHub issue, a screenshot): the
+address itself is the thing a filter rule would target.
+
 ## Backups
 
 `install.sh backup` tars `~/sui-vpn` (state + DB) to

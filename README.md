@@ -228,19 +228,25 @@ already hit and fixed.
 
 One Worker + KV namespace serves exactly **one** server — but one
 Cloudflare account and one API token serve any number of panels. A
-fresh install always creates **new** resources: it checks whether
-`sui-sub` is already used and, if so, takes the next free name
-(`sui-sub-2`, `sui-sub-3`, …) and tells you which one it picked. If
-you want a specific name, set it explicitly:
+fresh install always creates **new** resources with **custom names**:
+it asks you to pick a Worker name (or takes a random one), and on the
+first install on an account it asks you to pick a workers.dev
+subdomain the same way. The names are the two labels of your fixed
+address, so they must be yours, not a shared default — if every repo
+user had the same address (or the same pattern), one filter rule
+could block all of them at once. A re-install of the same server
+keeps its stored names and never re-asks.
+
+To choose the names yourself:
 
 ```bash
-WORKER_NAME=my-panel KV_TITLE=my-panel sudo -E bash install.sh install
+WORKER_NAME=my-panel KV_TITLE=my-panel WORKERS_SUBDOMAIN=myname42 sudo -E bash install.sh install
 ```
 
-If that name is already taken, the installer says so and either
-suggests the next free one (press Enter to take it, when interactive)
-or picks it automatically (when stdin is not a terminal). A re-install
-of the same server keeps its stored names and never re-checks them.
+If a requested Worker name is already taken, the installer says so
+and either suggests the next free one (press Enter to take it, when
+interactive) or picks it automatically (when stdin is not a
+terminal).
 
 If two servers ever share one Worker + KV, they overwrite each
 other's `panel:host` (the fixed panel URL flips between the two

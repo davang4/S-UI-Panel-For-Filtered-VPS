@@ -30,12 +30,20 @@ CFD_URL="https://github.com/cloudflare/cloudflared/releases/download/${CFD_VERSI
 CFD_SHA_URL="${CFD_URL}.sha256"
 # One Worker + KV namespace serves exactly ONE server. A second server
 # MUST use different names (same account and token are fine):
-#   WORKER_NAME=sui-sub-2 KV_TITLE=sui-sub-2 sudo -E bash install.sh install
+#   WORKER_NAME=my-panel-2 KV_TITLE=my-panel-2 sudo -E bash install.sh install
 # Sharing one Worker + KV between servers mixes their panel URLs,
 # subscription keys and SUB_SECRET — the symptom is a panel that
 # "doesn't come up" while the VPN configs keep working.
+# Names are custom and per-user on purpose: the Worker name and the
+# workers.dev subdomain are the two labels of the fixed address, so a
+# shared default (the same name for every repo user) would be one
+# filter rule away from blocking all of them at once. Fresh installs
+# ask the user for a custom Worker name (or take a random one), and
+# register a custom workers.dev subdomain the same way.
 WORKER_NAME_REQ="${WORKER_NAME:-}"
 KV_TITLE_REQ="${KV_TITLE:-}"
+# Fallback only — a fresh install replaces this via prompt_worker_name
+# (custom or random); a re-install uses the stored names.
 WORKER_NAME="${WORKER_NAME_REQ:-sui-sub}"
 KV_TITLE="${KV_TITLE_REQ:-sui-sub}"
 # Global command: after install, `sudo sui-vpn <command>` works from any
@@ -493,6 +501,122 @@ resolve_worker_names() {
   STORED_KV_TITLE="${stored_title}"
 }
 
+random_name() {
+  # A random, prefix-free name: a letter + 10 hex chars, e.g. w687a1a960e.
+  # No shared string, so no two repo users share a fingerprint in
+  # their fixed address.
+  printf 'w%s' "$(head -c 5 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+}
+
+valid_subdomain() {
+  # Cloudflare workers.dev subdomain: lowercase letters, digits,
+  # hyphens; 1-63 chars; must not start or end with a hyphen.
+  [ -n "$1" ] || return 1
+  [ "${#1}" -le 63 ] || return 1
+  case "$1" in *[!a-z0-9-]*) return 1 ;; esac
+  case "$1" in -*) return 1 ;; esac
+  case "$1" in *-) return 1 ;; esac
+  return 0
+}
+
+valid_worker_name() {
+  # Worker name: starts with a letter; letters, digits, hyphens,
+  # underscores; 1-63 chars.
+  [ -n "$1" ] || return 1
+  [ "${#1}" -le 63 ] || return 1
+  case "$1" in *[!a-zA-Z0-9_-]*) return 1 ;; esac
+  case "$1" in [!a-zA-Z]*) return 1 ;; esac
+  return 0
+}
+
+prompt_worker_name() {
+  # Fresh install, no explicit name: let the user pick a custom Worker
+  # name (interactive), or take a random one (non-interactive). The name
+  # is the first label of the fixed address, so a shared default would
+  # be a fingerprint one filter rule could block for every repo user.
+  # Sets WORKER_NAME (and KV_TITLE, unless explicitly requested).
+  local suggestion answer
+  suggestion=$(random_name)
+  if [ -t 0 ]; then
+    echo "Pick a Worker name for this server — it is the first part of your fixed address."
+    echo "Choose something unique (not 'sui-sub'), or press Enter to use ${suggestion}."
+    printf 'Worker name (Enter for %s): ' "${suggestion}"
+    read -r answer || answer=""
+    if [ -z "${answer}" ]; then
+      WORKER_NAME="${suggestion}"
+    else
+      WORKER_NAME="$(printf '%s' "${answer}" | tr 'A-Z' 'a-z')"
+    fi
+    if ! valid_worker_name "${WORKER_NAME}"; then
+      echo "'${WORKER_NAME}' is not a valid Worker name (starts with a letter; letters, digits, hyphens, underscores; up to 63 chars); using ${suggestion} instead."
+      WORKER_NAME="${suggestion}"
+    fi
+  else
+    echo "no Worker name given; using '${suggestion}' for this server (set WORKER_NAME to choose your own)."
+    WORKER_NAME="${suggestion}"
+  fi
+  if [ -z "${KV_TITLE_REQ}" ]; then KV_TITLE="${WORKER_NAME}"; fi
+  set_state WORKER_NAME "${WORKER_NAME}"
+  set_state KV_TITLE "${KV_TITLE}"
+}
+
+register_subdomain() {
+  # Sets SUBDOMAIN (global) to the account's workers.dev subdomain.
+  # If the account has none, registers one — an explicit
+  # WORKERS_SUBDOMAIN, a custom name the user types, or a random one.
+  # Never a shared/predictable name: one filter rule on a shared
+  # address would block every repo user at once. Returns 0 on success.
+  local resp candidate ok tries suggestion answer
+  resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/workers/subdomain")
+  SUBDOMAIN=$(printf '%s' "${resp}" | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('subdomain',''))" 2>/dev/null)
+  [ -n "${SUBDOMAIN}" ] && return 0
+  if [ -n "${WORKERS_SUBDOMAIN:-}" ]; then
+    candidate="$(printf '%s' "${WORKERS_SUBDOMAIN}" | tr 'A-Z' 'a-z')"
+    if valid_subdomain "${candidate}"; then
+      resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"${candidate}\"}")
+      ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
+      if [ "${ok}" = "True" ]; then
+        SUBDOMAIN="${candidate}"; echo "registered workers.dev subdomain: ${SUBDOMAIN}"; return 0
+      fi
+      echo "WORKERS_SUBDOMAIN '${candidate}' was not accepted (taken or invalid)."
+    else
+      echo "WORKERS_SUBDOMAIN '${candidate}' is not a valid subdomain; ignoring it."
+    fi
+  fi
+  if [ -t 0 ]; then
+    echo "This Cloudflare account has no workers.dev subdomain yet. It becomes part of your fixed address — pick a custom, unique name, not 'suisub' or anything from this repo, so one filter rule can't block every user at once."
+  fi
+  tries=0
+  while [ "${tries}" -lt 8 ]; do
+    tries=$((tries + 1))
+    if [ -t 0 ]; then
+      suggestion=$(random_name)
+      printf 'workers.dev subdomain (Enter for %s): ' "${suggestion}"
+      read -r answer || answer=""
+      if [ -z "${answer}" ]; then
+        candidate="${suggestion}"
+      else
+        candidate="$(printf '%s' "${answer}" | tr 'A-Z' 'a-z')"
+      fi
+      if ! valid_subdomain "${candidate}"; then
+        echo "'${candidate}' is not a valid subdomain (lowercase letters, digits, hyphens; 1-63 chars)."
+        continue
+      fi
+    else
+      candidate=$(random_name)
+    fi
+    resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"${candidate}\"}")
+    ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
+    if [ "${ok}" = "True" ]; then
+      SUBDOMAIN="${candidate}"; echo "registered workers.dev subdomain: ${SUBDOMAIN}"; return 0
+    fi
+    echo "subdomain '${candidate}' was not accepted (taken or invalid); trying another..."
+  done
+  echo "could not register a workers.dev subdomain: ${resp}"
+  echo "Register one in the dashboard (Workers & Pages) and re-run deploy-worker."
+  return 1
+}
+
 worker_name_taken() {
   # worker_name_taken NAME — 0 if a Worker with that name already exists.
   local code
@@ -667,6 +791,12 @@ deploy_worker() {
   set_state WORKER_NAME "${WORKER_NAME}"
   set_state KV_TITLE "${KV_TITLE}"
 
+  # Fresh install, no explicit name: never use a shared default Worker
+  # name — it would be the first label of every user's fixed address.
+  if [ -z "${STORED_WORKER_NAME}" ] && [ -z "${WORKER_NAME_REQ}" ]; then
+    prompt_worker_name
+  fi
+
   # Fresh install (no stored names) or a request for different names:
   # never silently reuse another server's Worker + KV. A re-install of
   # this same server keeps its stored names and skips this check.
@@ -768,27 +898,13 @@ EOF
   [ "${ok}" = "True" ] || { echo "worker upload failed: ${resp}"; return 1; }
   echo "worker uploaded: ${WORKER_NAME}"
 
-  # Enable workers.dev route + get account subdomain. If the account
-  # never registered a workers.dev subdomain, register one automatically
-  # (a random sui-<hex> name; the name is only an address, never shown
-  # to clients as anything meaningful) — otherwise the worker has no
-  # fixed address at all.
+  # Enable workers.dev route + get account subdomain (a custom/random
+  # one is registered if the account has none — see register_subdomain;
+  # without a subdomain the worker has no fixed address at all).
   cf_api POST "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/subdomain" '{"enabled":true}' >/dev/null
-  resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/workers/subdomain")
-  local sub
-  sub=$(printf '%s' "${resp}" | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('subdomain',''))" 2>/dev/null)
-  if [ -z "${sub}" ]; then
-    local i candidate ok
-    for i in 1 2 3 4 5; do
-      candidate="sui-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-8)"
-      resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"${candidate}\"}")
-      ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
-      if [ "${ok}" = "True" ]; then sub="${candidate}"; echo "registered workers.dev subdomain: ${sub}"; break; fi
-    done
-  fi
-  [ -n "${sub}" ] || { echo "could not read or register a workers.dev subdomain: ${resp}"; echo "Register one in the dashboard (Workers & Pages) and re-run deploy-worker."; return 1; }
-  set_state WORKER_URL "https://${WORKER_NAME}.${sub}.workers.dev"
-  echo "worker URL: https://${WORKER_NAME}.${sub}.workers.dev"
+  register_subdomain || return 1
+  set_state WORKER_URL "https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev"
+  echo "worker URL: https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev"
 
   # Point the panel's subscription links at the worker (with the secret,
   # when set): s-ui composes each client's link as subURI + client name,

@@ -5,6 +5,14 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-24
 
+- **No shared fingerprint in the fixed address.** The Worker name and
+  the workers.dev subdomain are now custom per user: a fresh install
+  asks for a Worker name (or takes a random prefix-free one), and the
+  first install on an account asks for a workers.dev subdomain the
+  same way (`WORKERS_SUBDOMAIN` sets it non-interactively). The old
+  auto-generated `sui-<hex>` subdomain and the `sui-sub` default are
+  gone. Reason: a shared address or pattern would let one filter rule
+  block every repo user at once. See docs/SECURITY.md.
 - `show` now prints the fixed panel address (`Panel (fixed):
   <worker URL><secret path>`) as its **first** line, so the address
   you actually use every day is right at the top instead of the
