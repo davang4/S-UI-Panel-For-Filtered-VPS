@@ -489,7 +489,95 @@ resolve_worker_names() {
   fi
   WORKER_NAME="${WORKER_NAME_REQ:-${stored_name:-sui-sub}}"
   KV_TITLE="${KV_TITLE_REQ:-${stored_title:-sui-sub}}"
+  STORED_WORKER_NAME="${stored_name}"
   STORED_KV_TITLE="${stored_title}"
+}
+
+worker_name_taken() {
+  # worker_name_taken NAME — 0 if a Worker with that name already exists.
+  local code
+  code=$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' \
+    "${CF_API}/accounts/${CF_ACCOUNT_ID}/workers/scripts/${1}" \
+    -H "Authorization: Bearer ${CF_API_TOKEN}" 2>/dev/null || echo 000)
+  [ "${code}" = "200" ]
+}
+
+kv_title_taken() {
+  # kv_title_taken TITLE — 0 if a KV namespace with that title exists.
+  local found
+  found=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces?per_page=100" 2>/dev/null \
+    | KV_TITLE="$1" python3 -c "
+import sys,json,os
+d=json.load(sys.stdin)
+print(1 if any(n.get('title')==os.environ['KV_TITLE'] for n in d.get('result') or []) else 0)
+" 2>/dev/null)
+  [ "${found}" = "1" ]
+}
+
+names_free() {
+  # names_free NAME — 0 if BOTH the Worker name and the KV title are free.
+  worker_name_taken "$1" && return 1
+  kv_title_taken "$1" && return 1
+  return 0
+}
+
+suggest_worker_names() {
+  # Print the first free Worker/KV name, starting from the requested one
+  # (sui-sub -> sui-sub-2 -> sui-sub-3 ...; sui-sub-2 -> sui-sub-3 ...).
+  local stem tail suffix candidate
+  tail="${WORKER_NAME##*-}"
+  case "${tail}" in
+    ''|*[!0-9]*) stem="${WORKER_NAME}"; suffix=1 ;;
+    *) stem="${WORKER_NAME%-*}"; suffix="${tail}" ;;
+  esac
+  candidate="${WORKER_NAME}"
+  while :; do
+    if names_free "${candidate}"; then echo "${candidate}"; return 0; fi
+    suffix=$((suffix + 1))
+    [ "${suffix}" -gt 60 ] && return 1
+    candidate="${stem}-${suffix}"
+  done
+}
+
+ensure_unique_worker_names() {
+  # A fresh install must never silently reuse another server's Worker +
+  # KV: if the requested names are taken, say so and pick the next free
+  # pair — or let the user type a name when interactive. One API token
+  # can therefore serve any number of panels (sui-sub, sui-sub-2, ...).
+  local suggestion answer requested="${WORKER_NAME}"
+  if [ -t 0 ]; then
+    while ! names_free "${WORKER_NAME}"; do
+      suggestion=$(suggest_worker_names) \
+        || die "could not find a free Worker/KV name; set WORKER_NAME and KV_TITLE explicitly"
+      echo "Worker name '${WORKER_NAME}' (or KV title '${KV_TITLE}') is already used by another install."
+      printf 'Enter a Worker name for this server, or press Enter to use %s: ' "${suggestion}"
+      read -r answer || answer=""
+      if [ -z "${answer}" ]; then
+        WORKER_NAME="${suggestion}"; KV_TITLE="${suggestion}"
+      else
+        WORKER_NAME="${answer}"; KV_TITLE="${answer}"
+      fi
+    done
+  else
+    if ! names_free "${WORKER_NAME}"; then
+      suggestion=$(suggest_worker_names) \
+        || die "could not find a free Worker/KV name; set WORKER_NAME and KV_TITLE explicitly"
+      echo "Worker name '${WORKER_NAME}' (or KV title '${KV_TITLE}') is already used by another install."
+      echo "non-interactive shell: using '${suggestion}' for this server automatically."
+      WORKER_NAME="${suggestion}"; KV_TITLE="${suggestion}"
+    fi
+  fi
+  if [ "${WORKER_NAME}" != "${requested}" ]; then
+    set_state WORKER_NAME "${WORKER_NAME}"
+    set_state KV_TITLE "${KV_TITLE}"
+    echo "this server will use Worker '${WORKER_NAME}' and KV '${KV_TITLE}'"
+  fi
+}
+
+stored_ns_title() {
+  # stored_ns_title NS_ID — print the title of that KV namespace (or empty).
+  cf_api GET "/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${1}" 2>/dev/null \
+    | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('title',''))" 2>/dev/null
 }
 
 kv_reuse_allowed() {
@@ -579,6 +667,15 @@ deploy_worker() {
   set_state WORKER_NAME "${WORKER_NAME}"
   set_state KV_TITLE "${KV_TITLE}"
 
+  # Fresh install (no stored names) or a request for different names:
+  # never silently reuse another server's Worker + KV. A re-install of
+  # this same server keeps its stored names and skips this check.
+  if [ -z "${STORED_WORKER_NAME}" ] \
+     || { [ -n "${WORKER_NAME_REQ}" ] && [ "${WORKER_NAME_REQ}" != "${STORED_WORKER_NAME}" ]; } \
+     || { [ -n "${KV_TITLE_REQ}" ] && [ "${KV_TITLE_REQ}" != "${STORED_KV_TITLE}" ]; }; then
+    ensure_unique_worker_names
+  fi
+
   # KV namespace (create or reuse). Re-deploying must reuse the namespace
   # the worker is already bound to — creating a second namespace with
   # the same title would leave the worker reading the old, now-stale
@@ -586,9 +683,16 @@ deploy_worker() {
   local resp ns_id old_ns_id
   old_ns_id="${KV_NAMESPACE_ID:-}"
   if [ -n "${KV_NAMESPACE_ID:-}" ] && kv_reuse_allowed; then
-    ns_id="${KV_NAMESPACE_ID}"
-    echo "reusing KV namespace: ${ns_id}"
-  else
+    # Verify the stored id really is the namespace with this title —
+    # an earlier buggy deploy could have recorded a mismatched id.
+    if [ "$(stored_ns_title "${KV_NAMESPACE_ID}")" = "${KV_TITLE}" ]; then
+      ns_id="${KV_NAMESPACE_ID}"
+      echo "reusing KV namespace: ${ns_id}"
+    else
+      echo "stored KV namespace id is not the '${KV_TITLE}' namespace; looking it up by title instead"
+    fi
+  fi
+  if [ -z "${ns_id:-}" ]; then
     resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces?per_page=100")
     ns_id=$(printf '%s' "${resp}" | KV_TITLE="${KV_TITLE}" python3 -c "
 import sys,json,os

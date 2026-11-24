@@ -73,6 +73,21 @@ belongs to another server — check `sync.py`'s `server:id` stamp in
 the KV dashboard to confirm which server owns a namespace. See
 README: Multiple servers.
 
+## First server's fixed address still wrong after the second moved
+
+The sync only writes when something changed *locally*, so a stale
+`panel:host` left by the other server stays in the KV forever. Force
+a full rewrite (after re-running the installer once so the server has
+the current `sync.py`):
+
+```bash
+sudo sui-vpn sync-now --force
+```
+
+Then check the fixed panel URL again after ~60 s. If a server never
+got a fixed address at all, `show` says "worker not deployed yet" —
+re-run `deploy-worker` and look for the "worker URL" line.
+
 ## Panel DNS replaced the Worker's DNS
 
 When the panel's `subJsonExt` contains a `dns` section with typed

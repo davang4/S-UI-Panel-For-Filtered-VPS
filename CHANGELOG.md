@@ -5,6 +5,27 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-24
 
+- **Fresh installs now auto-pick a free Worker/KV name.** A new server
+  never silently reuses another server's Worker + KV: the installer
+  checks whether the name is taken and takes the next free one
+  (`sui-sub-2`, `sui-sub-3`, …), telling you which one it picked. An
+  explicitly requested name that is taken gets announced, with the
+  next free one suggested (press Enter to take it when interactive)
+  or picked automatically (non-interactive). One API token can now
+  serve any number of panels with no env vars needed. A re-install of
+  the same server keeps its stored names.
+- **Fix: the stored KV id is now verified by title before reuse.**
+  An earlier buggy deploy could record a namespace id whose title did
+  not match the stored name; reusing it silently kept the server on
+  the wrong (shared) namespace. A mismatch now falls through to the
+  find-by-title / create path.
+- `sync-now --force` rewrites everything to KV even when the digest
+  is unchanged — the fix for a first server whose `panel:host` was
+  overwritten by a second server sharing its KV (the normal sync only
+  writes when something changed locally, so the stale value stayed
+  forever). `cf_request` also no longer crashes with a traceback on
+  HTTP errors (deleted namespace/account, bad token); it reports a
+  clean failure instead.
 - **Fix: moving a server to new Worker/KV names did not actually move
   the KV.** `resolve_worker_names` read the "stored" title from the
   shell variables, where the env value given on the command line was

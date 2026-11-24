@@ -133,6 +133,7 @@ same list.
 | `status` | Service states, tunnel URLs, last tunnel log lines, last sync run. Start here when something is wrong. |
 | `sync-now` | Sync clients to the Worker right now (the timer does this every 60 s anyway). |
 | `sync-now --dry-run` | Preview what would sync, including the full links. Writes nothing. |
+| `sync-now --force` | Rewrite everything to KV even if nothing changed locally (use after a Worker/KV move, or when another server overwrote this server's `panel:host`). |
 | `deploy-worker` | Re-upload `worker.js` to Cloudflare after editing it. |
 | `update-sui` | Replace s-ui with the newest GitHub release. Verifies the new binary runs first and keeps a timestamped backup of the old one. |
 | `panel-on` / `panel-off` | Allow / stop panel access from the internet. Off means the panel is reachable only via SSH forward. |
@@ -225,31 +226,46 @@ already hit and fixed.
 
 ## Multiple servers
 
-One Worker + KV namespace serves exactly **one** server. The same
-Cloudflare account and the same API token are fine for many servers —
-but each server needs its own Worker and KV names:
+One Worker + KV namespace serves exactly **one** server — but one
+Cloudflare account and one API token serve any number of panels. A
+fresh install always creates **new** resources: it checks whether
+`sui-sub` is already used and, if so, takes the next free name
+(`sui-sub-2`, `sui-sub-3`, …) and tells you which one it picked. If
+you want a specific name, set it explicitly:
 
 ```bash
-WORKER_NAME=sui-sub-2 KV_TITLE=sui-sub-2 sudo -E bash install.sh install
+WORKER_NAME=my-panel KV_TITLE=my-panel sudo -E bash install.sh install
 ```
 
-(Use `sui-sub-3`, `sui-sub-4`, … for the next ones. The names are
-stored in `state.env`, so later `deploy-worker` runs keep them.)
+If that name is already taken, the installer says so and either
+suggests the next free one (press Enter to take it, when interactive)
+or picks it automatically (when stdin is not a terminal). A re-install
+of the same server keeps its stored names and never re-checks them.
 
-If two servers share one Worker + KV, they overwrite each other's
-`panel:host` (the fixed panel URL flips between the two panels),
-`panel:subjson`, the `SUB_SECRET` variable, and any client-name keys
-they both have — the classic symptom is a panel that "doesn't come
-up" while the VPN configs keep working. The installer guards against
-this: `sync.py` stamps each namespace with `server:id`, and
-`deploy-worker` warns loudly (and waits 10 s) if the namespace
+If two servers ever share one Worker + KV, they overwrite each
+other's `panel:host` (the fixed panel URL flips between the two
+panels), `panel:subjson`, the `SUB_SECRET` variable, and any
+client-name keys they both have — the classic symptom is a panel that
+"doesn't come up" while the VPN configs keep working. The installer
+guards against this: `sync.py` stamps each namespace with `server:id`,
+and `deploy-worker` warns loudly (and waits 10 s) if the namespace
 already belongs to another server.
 
 Already sharing one by mistake? On the second server, re-run the
-install with different names (above) — it deploys a separate Worker +
+install — it now detects the collision, creates a separate Worker +
 KV, re-syncs that server's clients there, and points its panel links
-at the new address. The first server recovers on its own once the
-second server stops writing to the shared namespace.
+at the new address. Then fix the first server's fixed panel URL: its
+sync only writes when something changed locally, so the stale
+`panel:host` left by the other server stays until forced:
+
+```bash
+sudo sui-vpn sync-now --force
+```
+
+(And if a server never got a fixed address at all, `show` says
+"worker not deployed yet" — re-run `deploy-worker` and watch for the
+"worker URL" line; the deploy fails loudly if the token, account, or
+KV step breaks.)
 
 ## The Iran split-routing (and how to change it)
 

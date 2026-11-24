@@ -188,13 +188,27 @@ def cf_request(env, method, path, body=None):
             "Content-Type": "text/plain",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # A 404 (deleted namespace/account) or 403 (bad token) used to
+        # crash the sync with a traceback; report it as a failed call
+        # instead so the caller prints a clean error and exits 1.
+        try:
+            return json.loads(e.read().decode())
+        except Exception:
+            return {"success": False,
+                    "errors": [{"code": e.code, "message": str(e)}]}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="write to KV even if the digest is unchanged "
+                         "(use after a Worker/KV move, or when the KV was "
+                         "overwritten by another server sharing it)")
     ap.add_argument("--hostname", default=None)
     args = ap.parse_args()
 
@@ -266,7 +280,7 @@ def main():
             prev = json.load(open(HASHFILE))
         except Exception:
             prev = {}
-    if prev.get("hash") == digest:
+    if not args.force and prev.get("hash") == digest:
         print("sync: unchanged, no KV writes")
         return 0
 
