@@ -50,11 +50,18 @@ sudo bash install.sh install
 ```
 
 The installer asks once for a Cloudflare API token (typed hidden, stored
-in `~/sui-vpn/state.env`, mode 600, never printed). Create it at
-dash.cloudflare.com → My Profile → API Tokens → Create Token, with:
+in `~/sui-vpn/state.env`, mode 600, never printed). Create it with this
+one-click link — the permissions are already ticked, just press
+"Continue to summary" and "Create Token":
+
+[Create the Cloudflare API token](https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_kv_storage%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=SUI-Panel-Sub)
+
+Or create it manually at dash.cloudflare.com → My Profile → API Tokens
+→ Create Token, with:
 
 - Account → **Workers Scripts → Edit**
 - Account → **Workers KV Storage → Edit**
+- Account → **Account Settings → Read**
 
 No zone permissions are needed. A token with these two permissions
 cannot touch your domains, DNS records, or tunnels.

@@ -24,6 +24,12 @@ else
 fi
 CFD_URL="https://github.com/cloudflare/cloudflared/releases/download/${CFD_VERSION}/cloudflared-linux-amd64"
 CFD_SHA_URL="${CFD_URL}.sha256"
+# One-click token creation: opens the dashboard with the exact permissions
+# this installer needs already ticked (Workers Scripts Edit, Workers KV
+# Storage Edit, Account Settings Read, all accounts, all zones) — the
+# user only presses "Continue to summary" and "Create Token", then pastes
+# the token below. Same link format used successfully since 2026-11-23.
+TOKEN_LINK="https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_kv_storage%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=SUI-Panel-Sub"
 CF_API="https://api.cloudflare.com/client/v4"
 WORKER_NAME="sui-sub"
 KV_TITLE="sui-sub"
@@ -356,8 +362,12 @@ deploy_worker() {
   if [ -z "${CF_API_TOKEN:-}" ]; then
     echo ""
     echo "Cloudflare API token needed for the Workers subscription."
-    echo "Create it at: dash.cloudflare.com -> My Profile -> API Tokens -> Create Token"
-    echo "Permissions: Account > Workers Scripts > Edit, Account > Workers KV Storage > Edit"
+    echo "Create it with one click (permissions pre-filled; just press"
+    echo "\"Continue to summary\" and \"Create Token\"):"
+    echo "  ${TOKEN_LINK}"
+    echo "Or create it manually at: dash.cloudflare.com -> My Profile -> API Tokens -> Create Token"
+    echo "Permissions: Account > Workers Scripts > Edit, Account > Workers KV Storage > Edit,"
+    echo "Account > Account Settings > Read"
     read -r -s -p "Paste Cloudflare API token (hidden): " CF_API_TOKEN; echo ""
     [ -n "${CF_API_TOKEN}" ] || { echo "no token given; skipping worker deploy"; return 1; }
     set_state CF_API_TOKEN "${CF_API_TOKEN}"

@@ -49,11 +49,17 @@ sudo bash install.sh install
 
 نصب‌کننده یک بار توکن API کلادفلر را می‌پرسد (مخفی تایپ می‌شود و در
 `~/sui-vpn/state.env` با دسترسی 600 ذخیره می‌شود، هرگز چاپ نمی‌شود).
-توکن را از اینجا بساز: dash.cloudflare.com → My Profile → API Tokens →
+توکن را با این لینک یک‌کلیکه بساز — دسترسی‌ها از قبل تیک خورده‌اند،
+فقط «Continue to summary» و بعد «Create Token» را بزن:
+
+[ساخت توکن API کلادفلر](https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_kv_storage%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=SUI-Panel-Sub)
+
+یا دستی از اینجا: dash.cloudflare.com → My Profile → API Tokens →
 Create Token، با این دسترسی‌ها:
 
 - Account → **Workers Scripts → Edit**
 - Account → **Workers KV Storage → Edit**
+- Account → **Account Settings → Read**
 
 دسترسی Zone لازم نیست. توکنی با همین دو دسترسی نمی‌تواند به دامنه‌ها،
 DNS یا تونل‌هایت دست بزند.
