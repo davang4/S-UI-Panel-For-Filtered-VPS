@@ -6,16 +6,22 @@
 # (webPath, generated on-server). Inbound binds 127.0.0.1 only.
 # Opens NO public ports, changes NO firewall, touches nothing else on the server.
 # Ports are overridable: PANEL_PORT / SUB_PORT / IN_PORT env vars.
-# Versions are pinned (tested together); bump SUI_VERSION / CFD_VERSION
-# deliberately, after testing the new release.
+# s-ui is fetched from its GitHub releases and defaults to the NEWEST
+# release (latest/download), so a fresh install always gets the current
+# version. Set SUI_VERSION=x.y.z to pin one deliberately instead, e.g.
+# after a new release breaks something. cloudflared stays pinned
+# (CFD_VERSION) with a checksum check, because it never needs features.
 set -u
 
 PANEL_PORT="${PANEL_PORT:-2095}"
 SUB_PORT="${SUB_PORT:-2096}"
 IN_PORT="${IN_PORT:-10087}"
-SUI_VERSION="1.6.8"
 CFD_VERSION="2026.11.2"
-SUI_URL="https://github.com/alireza0/s-ui/releases/download/v${SUI_VERSION}/s-ui-linux-amd64.tar.gz"
+if [ -n "${SUI_VERSION:-}" ]; then
+  SUI_URL="https://github.com/alireza0/s-ui/releases/download/v${SUI_VERSION}/s-ui-linux-amd64.tar.gz"
+else
+  SUI_URL="https://github.com/alireza0/s-ui/releases/latest/download/s-ui-linux-amd64.tar.gz"
+fi
 CFD_URL="https://github.com/cloudflare/cloudflared/releases/download/${CFD_VERSION}/cloudflared-linux-amd64"
 CFD_SHA_URL="${CFD_URL}.sha256"
 CF_API="https://api.cloudflare.com/client/v4"
@@ -79,17 +85,30 @@ preflight() {
   command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 }
 
+download_sui() {
+  # Fetch the newest s-ui release from GitHub into ${BIN}/sui.new and
+  # verify it runs. Does NOT swap it in — the caller does that, so a
+  # failed download can never leave a broken or missing binary behind.
+  # Returns 0 on success, 1 on failure.
+  local tmptgz="${DIR}/s-ui.tar.gz"
+  mkdir -p "${BIN}" "${DIR}"
+  curl -fL --retry 3 -o "${tmptgz}" "${SUI_URL}" || { echo "s-ui download failed: ${SUI_URL}" >&2; return 1; }
+  tar xzf "${tmptgz}" -C "${DIR}" s-ui/sui >/dev/null 2>&1 || { echo "s-ui extract failed" >&2; return 1; }
+  mv "${DIR}/s-ui/sui" "${BIN}/sui.new"
+  rmdir "${DIR}/s-ui" 2>/dev/null || true
+  chmod +x "${BIN}/sui.new"
+  rm -f "${tmptgz}"
+  "${BIN}/sui.new" -v >/dev/null 2>&1 || { echo "downloaded sui binary does not run" >&2; rm -f "${BIN}/sui.new"; return 1; }
+  echo "downloaded s-ui: $("${BIN}/sui.new" -v 2>/dev/null | head -1)"
+  return 0
+}
+
 download_binaries() {
   mkdir -p "${BIN}"
   if [ ! -x "${BIN}/sui" ]; then
-    echo "downloading s-ui..."
-    local tmptgz="${DIR}/s-ui.tar.gz"
-    curl -fL --retry 3 -o "${tmptgz}" "${SUI_URL}" || die "s-ui download failed"
-    tar xzf "${tmptgz}" -C "${DIR}" s-ui/sui >/dev/null 2>&1 || die "s-ui extract failed"
-    mv "${DIR}/s-ui/sui" "${BIN}/sui"
-    rmdir "${DIR}/s-ui" 2>/dev/null || true
-    chmod +x "${BIN}/sui"
-    rm -f "${tmptgz}"
+    echo "downloading s-ui (latest release)..."
+    download_sui || die "s-ui download failed"
+    mv "${BIN}/sui.new" "${BIN}/sui"
   fi
   if [ ! -x "${BIN}/cloudflared" ]; then
     echo "downloading cloudflared ${CFD_VERSION}..."
@@ -614,6 +633,27 @@ cmd_panel_off() {
   echo "Turn it back on with: sudo bash install.sh panel-on"
 }
 
+cmd_update_sui() {
+  need_root update-sui
+  load_state
+  local old_ver backup
+  old_ver=$("${BIN}/sui" -v 2>/dev/null | head -1 || echo "(none)")
+  echo "current: ${old_ver}"
+  echo "fetching latest s-ui from GitHub..."
+  download_sui || die "update failed; current binary untouched"
+  backup="${BIN}/sui.bak-$(date +%Y%m%d-%H%M)"
+  if [ -x "${BIN}/sui" ]; then
+    cp "${BIN}/sui" "${backup}" && echo "backup of old binary: ${backup}"
+  fi
+  mv "${BIN}/sui.new" "${BIN}/sui"
+  echo "new: $("${BIN}/sui" -v 2>/dev/null | head -1)"
+  systemctl restart sui-panel >/dev/null 2>&1 || die "failed to restart sui-panel"
+  echo "panel restarted on the new s-ui. If anything misbehaves, restore the backup:"
+  echo "  sudo cp ${backup} ${BIN}/sui && sudo systemctl restart sui-panel"
+  echo "or pin a known version and re-run: SUI_VERSION=1.6.8 sudo bash install.sh update-sui"
+  echo "then check: sudo bash install.sh status"
+}
+
 cmd_deploy_worker() {
   need_root deploy-worker
   load_state
@@ -666,9 +706,10 @@ case "${1:-install}" in
   status) cmd_status ;;
   sync-now) shift; cmd_sync_now "$@" ;;
   deploy-worker) cmd_deploy_worker ;;
+  update-sui) cmd_update_sui ;;
   panel-on) cmd_panel_on ;;
   panel-off) cmd_panel_off ;;
   backup) cmd_backup ;;
   uninstall) cmd_uninstall ;;
-  *) echo "usage: bash install.sh [install|show|status|sync-now|deploy-worker|panel-on|panel-off|backup|uninstall]" >&2; exit 1 ;;
+  *) echo "usage: bash install.sh [install|show|status|sync-now|deploy-worker|update-sui|panel-on|panel-off|backup|uninstall]" >&2; exit 1 ;;
 esac

@@ -85,6 +85,7 @@ sudo bash install.sh status      # وضعیت سرویس‌ها و لاگ تون
 sudo bash install.sh sync-now    # همگام‌سازی دستی کلاینت‌ها با ورکر
 sudo bash install.sh sync-now --dry-run   # نمایش چیزی که سینک می‌شود (لینک‌ها هم هست)
 sudo bash install.sh deploy-worker        # آپلود دوباره worker.js بعد از ویرایش آن
+sudo bash install.sh update-sui           # جایگزینی s-ui با جدیدترین نسخه گیت‌هاب (از نسخه قبلی بکاپ می‌گیرد)
 sudo bash install.sh panel-on    # باز کردن دسترسی اینترنتی پنل
 sudo bash install.sh panel-off   # پنل فقط از راه SSH forward در دسترس باشد
 sudo bash install.sh backup      # بکاپ ~/sui-vpn (حاوی رمزها — حتماً از سرور خارجش کن)

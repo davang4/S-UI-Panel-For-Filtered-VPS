@@ -70,10 +70,13 @@ so it is documented here, not built in.
 ## Supply chain
 
 - `install.sh` downloads `s-ui` and `cloudflared` from their GitHub
-  releases over HTTPS, pinned to tested versions (`SUI_VERSION`,
-  `CFD_VERSION`). `cloudflared`'s published `.sha256` is verified
-  when available; s-ui publishes no checksum, so the version pin is
-  the protection — bump it deliberately, after testing.
+  releases over HTTPS. `s-ui` defaults to the newest release
+  (`releases/latest`); set `SUI_VERSION=x.y.z` to pin a version
+  deliberately, e.g. after a new release breaks something.
+  `cloudflared` stays pinned (`CFD_VERSION`) with its published
+  `.sha256` verified when available; s-ui publishes no checksum, so
+  the downloaded binary is verified by running it before it replaces
+  the old one (`update-sui` also keeps a timestamped backup).
 - `sync.py` and `sui_setup.py` are Python stdlib only; `worker.js` has
   no dependencies.
 - The installer opens no public ports and changes no firewall rules;

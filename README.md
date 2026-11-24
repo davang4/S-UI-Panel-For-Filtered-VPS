@@ -87,6 +87,7 @@ sudo bash install.sh status      # service states + tunnel logs
 sudo bash install.sh sync-now    # sync clients to the Worker right now
 sudo bash install.sh sync-now --dry-run   # show what would sync (links included)
 sudo bash install.sh deploy-worker        # re-upload worker.js after editing it
+sudo bash install.sh update-sui           # replace s-ui with the newest GitHub release (backs up the old binary)
 sudo bash install.sh panel-on    # allow panel access from the internet
 sudo bash install.sh panel-off   # panel reachable only via SSH forward
 sudo bash install.sh backup      # tarball of ~/sui-vpn (contains secrets — copy it off-server)
