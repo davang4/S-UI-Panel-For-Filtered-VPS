@@ -56,6 +56,23 @@ VPN on, reproduce the failure, then copy the last log lines — it shows
 whether the failure is DNS, the route, or the connection. Common
 suspect: the merged panel DNS (see below).
 
+## Second server: panel "doesn't come up" but VPN configs work
+
+Two servers sharing one Worker + KV overwrite each other's
+`panel:host`, `panel:subjson`, `SUB_SECRET` and same-name client keys,
+so the fixed panel URL flips between the two panels while the VPN
+tunnels keep working. Each server needs its own Worker + KV names
+(same account and token are fine):
+
+```bash
+WORKER_NAME=sui-sub-2 KV_TITLE=sui-sub-2 sudo -E bash install.sh install
+```
+
+`deploy-worker` now warns (and waits 10 s) if the namespace already
+belongs to another server — check `sync.py`'s `server:id` stamp in
+the KV dashboard to confirm which server owns a namespace. See
+README: Multiple servers.
+
 ## Panel DNS replaced the Worker's DNS
 
 When the panel's `subJsonExt` contains a `dns` section with typed

@@ -113,8 +113,16 @@ tmux, where hidden `read` can fail), export `CF_API_TOKEN` and
 
 ## Management
 
-Every command runs from the install directory on the VPS. `sudo bash
-install.sh help` prints the same list.
+After install, every command also works from any directory — no `cd`
+needed:
+
+```bash
+sudo sui-vpn show
+sudo sui-vpn status
+```
+
+`sudo bash install.sh help` (in the install directory) prints the
+same list.
 
 ### Command reference
 
@@ -214,6 +222,34 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture,
 subscription-link secret), and
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for the failures we
 already hit and fixed.
+
+## Multiple servers
+
+One Worker + KV namespace serves exactly **one** server. The same
+Cloudflare account and the same API token are fine for many servers —
+but each server needs its own Worker and KV names:
+
+```bash
+WORKER_NAME=sui-sub-2 KV_TITLE=sui-sub-2 sudo -E bash install.sh install
+```
+
+(Use `sui-sub-3`, `sui-sub-4`, … for the next ones. The names are
+stored in `state.env`, so later `deploy-worker` runs keep them.)
+
+If two servers share one Worker + KV, they overwrite each other's
+`panel:host` (the fixed panel URL flips between the two panels),
+`panel:subjson`, the `SUB_SECRET` variable, and any client-name keys
+they both have — the classic symptom is a panel that "doesn't come
+up" while the VPN configs keep working. The installer guards against
+this: `sync.py` stamps each namespace with `server:id`, and
+`deploy-worker` warns loudly (and waits 10 s) if the namespace
+already belongs to another server.
+
+Already sharing one by mistake? On the second server, re-run the
+install with different names (above) — it deploys a separate Worker +
+KV, re-syncs that server's clients there, and points its panel links
+at the new address. The first server recovers on its own once the
+second server stops writing to the shared namespace.
 
 ## The Iran split-routing (and how to change it)
 

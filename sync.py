@@ -209,6 +209,11 @@ def main():
         ws_path = "/" + ws_path
 
     clients = read_clients()
+    # Stable identity of THIS server/install (first client's UUID). The
+    # installer reads it back at deploy time: if a KV namespace already
+    # carries another server's id, the two servers are sharing one
+    # Worker + KV by mistake (see README: Multiple servers).
+    server_id = env.get("CLIENT_UUID", "")
     payload = {}
     name_keys = {}
     for c in clients:
@@ -226,7 +231,8 @@ def main():
 
     digest = hashlib.sha256(
         json.dumps({"h": hostname, "ph": panel_host, "p": payload,
-                    "n": name_keys, "r": routes_json}, sort_keys=True).encode()
+                    "n": name_keys, "r": routes_json, "s": server_id},
+                   sort_keys=True).encode()
     ).hexdigest()
 
     if args.dry_run:
@@ -247,6 +253,7 @@ def main():
                 print(f"    sub by name: {prefix}{c['name']}")
             else:
                 print(f"    sub by name: sub:{c['name']}")
+        print(f"server id: {server_id or '(none)'}")
         print(f"panel routes: {routes_source or 'none (worker keeps built-in Iran bypass)'}")
         if routes_json:
             print(f"  {routes_json[:500]}")
@@ -280,6 +287,12 @@ def main():
     for nm in prev.get("names", []):
         if nm not in name_keys:
             cf_request(env, "DELETE", f"{ns}/values/sub:{nm}")
+    if server_id and prev.get("server_id") != server_id:
+        r = cf_request(env, "PUT", f"{ns}/values/server:id", server_id)
+        if not r.get("success"):
+            print(f"sync: KV PUT server:id failed: {r.get('errors')}")
+            return 1
+        print(f"sync: server id stamped: {server_id}")
     if panel_host and prev.get("panel_host") != panel_host:
         r = cf_request(env, "PUT", f"{ns}/values/panel:host", panel_host)
         if not r.get("success"):
@@ -300,7 +313,8 @@ def main():
         json.dump({"hash": digest, "uuids": sorted(payload),
                    "names": sorted(name_keys),
                    "panel_host": panel_host, "subjson": routes_json,
-                   "routes_source": routes_source}, f)
+                   "routes_source": routes_source,
+                   "server_id": server_id}, f)
     os.chmod(HASHFILE, 0o600)
     print(f"sync: wrote {len(payload)} subscription(s) "
           f"(+{len(name_keys)} name keys) for {hostname}")

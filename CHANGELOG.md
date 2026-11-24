@@ -5,6 +5,19 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-24
 
+- Multiple servers, one Cloudflare account: `WORKER_NAME` / `KV_TITLE`
+  env overrides (stored in `state.env`), so each server gets its own
+  Worker + KV namespace. Sharing one Worker + KV between servers used
+  to mix their panel URLs, subscription keys and `SUB_SECRET` — the
+  symptom was a panel that "doesn't come up" while VPN configs kept
+  working. `sync.py` now stamps each namespace with `server:id`, and
+  `deploy-worker` warns loudly (10 s pause) if the namespace already
+  belongs to another server. KV lookup is now find-by-title-first, so
+  a re-deploy can never create a duplicate-title namespace.
+- Global command: after install, `sudo sui-vpn <command>` works from
+  any directory (no `cd`). The installer copies itself to `~/sui-vpn`
+  and links `/usr/local/bin/sui-vpn` to it; `uninstall` removes the
+  link.
 - Port conflicts no longer abort the install: if a port is taken by
   another program, the installer says so and lets you type a different
   one (Enter = a random free port it suggests), or picks a random free

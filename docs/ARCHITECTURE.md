@@ -57,6 +57,9 @@ downstream re-reads them.
   the last "Requesting new quick Tunnel", so a stale URL is never
   reused);
 - the panel tunnel hostname from `panel-tunnel.log` → KV `panel:host`;
+- this install's identity (`CLIENT_UUID`) → KV `server:id`, so
+  `deploy-worker` can tell when a namespace already belongs to
+  another server (see README: Multiple servers);
 - the panel's client-side routing: setting `subJsonExt` (the
   subscription JSON extension), falling back to the core `config`
   route/dns **only if it mentions Iran** (the stock core config only
@@ -117,5 +120,5 @@ optional `SUB_SECRET` variable.
   ID, KV namespace ID, Worker URL.
 - VPS `~/sui-vpn/db/s-ui.db`: users, inbounds, panel settings.
 - Cloudflare KV `sui-sub`: `sub:<uuid>`, `sub:<name>` (base64 links),
-  `panel:host`, `panel:subjson`. No passwords, no tokens.
+  `panel:host`, `panel:subjson`, `server:id`. No passwords, no tokens.
 - Cloudflare Worker: code + optional `SUB_SECRET` variable.

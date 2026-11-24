@@ -28,6 +28,19 @@ else
 fi
 CFD_URL="https://github.com/cloudflare/cloudflared/releases/download/${CFD_VERSION}/cloudflared-linux-amd64"
 CFD_SHA_URL="${CFD_URL}.sha256"
+# One Worker + KV namespace serves exactly ONE server. A second server
+# MUST use different names (same account and token are fine):
+#   WORKER_NAME=sui-sub-2 KV_TITLE=sui-sub-2 sudo -E bash install.sh install
+# Sharing one Worker + KV between servers mixes their panel URLs,
+# subscription keys and SUB_SECRET — the symptom is a panel that
+# "doesn't come up" while the VPN configs keep working.
+WORKER_NAME_REQ="${WORKER_NAME:-}"
+KV_TITLE_REQ="${KV_TITLE:-}"
+WORKER_NAME="${WORKER_NAME_REQ:-sui-sub}"
+KV_TITLE="${KV_TITLE_REQ:-sui-sub}"
+# Global command: after install, `sudo sui-vpn <command>` works from any
+# directory (no cd). Overridable for tests: SUI_VPN_LINK.
+GLOBAL_LINK="${SUI_VPN_LINK:-/usr/local/bin/sui-vpn}"
 # One-click token creation: opens the dashboard with the exact permissions
 # this installer needs already ticked (Workers Scripts Edit, Workers KV
 # Storage Edit, Account Settings Read, all accounts, all zones) — the
@@ -35,8 +48,6 @@ CFD_SHA_URL="${CFD_URL}.sha256"
 # the token below. Same link format used successfully since 2026-11-23.
 TOKEN_LINK="https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22workers_kv_storage%22%2C%22type%22%3A%22edit%22%7D%2C%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%5D&accountId=*&zoneId=all&name=SUI-Panel-Sub"
 CF_API="https://api.cloudflare.com/client/v4"
-WORKER_NAME="sui-sub"
-KV_TITLE="sui-sub"
 
 if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
   TARGET_HOME=$(eval echo "~${SUDO_USER}")
@@ -49,7 +60,10 @@ STATE="${DIR}/state.env"
 TLOG="${DIR}/tunnel.log"
 PTLOG="${DIR}/panel-tunnel.log"
 DBFILE="${DIR}/db/s-ui.db"
-BUNDLE_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks: when run as `sui-vpn` (/usr/local/bin/sui-vpn ->
+# ~/sui-vpn/install.sh), $0 points at the link, not the real script.
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+BUNDLE_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 PANEL_UNIT="/etc/systemd/system/sui-panel.service"
 TUN_UNIT="/etc/systemd/system/sui-tunnel.service"
 PANEL_TUN_UNIT="/etc/systemd/system/sui-panel-tunnel.service"
@@ -458,6 +472,43 @@ cf_api() {
   fi
 }
 
+resolve_worker_names() {
+  # Effective Worker/KV names: an explicit env value wins, then the names
+  # stored from a previous deploy (state.env), then the defaults.
+  # Sets WORKER_NAME / KV_TITLE and remembers the stored KV title in
+  # STORED_KV_TITLE for the reuse decision below.
+  local stored_name="${WORKER_NAME:-}" stored_title="${KV_TITLE:-}"
+  WORKER_NAME="${WORKER_NAME_REQ:-${stored_name:-sui-sub}}"
+  KV_TITLE="${KV_TITLE_REQ:-${stored_title:-sui-sub}}"
+  STORED_KV_TITLE="${stored_title}"
+}
+
+kv_reuse_allowed() {
+  # 0 (reuse the stored KV namespace id) when the stored title matches
+  # the effective one, or when neither an explicit title nor a stored
+  # title exists (legacy same-server re-deploy).
+  [ "${STORED_KV_TITLE}" = "${KV_TITLE}" ] && return 0
+  [ -z "${KV_TITLE_REQ}" ] && [ -z "${STORED_KV_TITLE}" ] && return 0
+  return 1
+}
+
+install_global_command() {
+  # Copy the installer next to the state (so it survives the bundle dir
+  # being deleted) and link it into PATH: `sudo sui-vpn <command>`
+  # works from any directory afterwards.
+  if [ "${BUNDLE_DIR}" != "${DIR}" ]; then
+    cp "${BUNDLE_DIR}/install.sh" "${DIR}/install.sh" || return 1
+  fi
+  chmod +x "${DIR}/install.sh" || return 1
+  ln -sf "${DIR}/install.sh" "${GLOBAL_LINK}" || return 1
+  echo "global command installed: sudo sui-vpn <command> (works from any directory)"
+  return 0
+}
+
+remove_global_command() {
+  rm -f "${GLOBAL_LINK}"
+}
+
 deploy_worker() {
   # Prompts for CF token + account id (hidden), deploys worker + KV.
   # On any failure: print fallback steps and return 1 (install continues).
@@ -513,17 +564,21 @@ deploy_worker() {
   fi
   export CF_ACCOUNT_ID
 
+  # Effective Worker/KV names (explicit env > stored > defaults). A
+  # second server needs different names — see the comment at the top.
+  resolve_worker_names
+  set_state WORKER_NAME "${WORKER_NAME}"
+  set_state KV_TITLE "${KV_TITLE}"
+
   # KV namespace (create or reuse). Re-deploying must reuse the namespace
-  # the worker is already bound to — creating a second "sui-sub" namespace
-  # would leave the worker reading the old, now-stale one.
+  # the worker is already bound to — creating a second namespace with
+  # the same title would leave the worker reading the old, now-stale
+  # one. So: look up by title FIRST, create only if absent.
   local resp ns_id
-  if [ -n "${KV_NAMESPACE_ID:-}" ]; then
+  if [ -n "${KV_NAMESPACE_ID:-}" ] && kv_reuse_allowed; then
     ns_id="${KV_NAMESPACE_ID}"
     echo "reusing KV namespace: ${ns_id}"
   else
-  resp=$(cf_api POST "/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces" "{\"title\":\"${KV_TITLE}\"}")
-  ns_id=$(printf '%s' "${resp}" | python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('result') or {}).get('id',''))" 2>/dev/null)
-  if [ -z "${ns_id}" ]; then
     resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces?per_page=100")
     ns_id=$(printf '%s' "${resp}" | KV_TITLE="${KV_TITLE}" python3 -c "
 import sys,json,os
@@ -532,12 +587,35 @@ for n in d.get('result') or []:
     if n.get('title')==os.environ['KV_TITLE']:
         print(n.get('id','')); break
 " 2>/dev/null)
-  fi
+    if [ -z "${ns_id}" ]; then
+      resp=$(cf_api POST "/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces" "{\"title\":\"${KV_TITLE}\"}")
+      ns_id=$(printf '%s' "${resp}" | python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('result') or {}).get('id',''))" 2>/dev/null)
+    fi
   fi
   [ -n "${ns_id}" ] || { echo "KV namespace create failed: ${resp}"; return 1; }
   set_state KV_NAMESPACE_ID "${ns_id}"
   export KV_NAMESPACE_ID="${ns_id}"
   echo "KV namespace ready: ${ns_id}"
+
+  # Guard: one Worker + KV serves exactly one server. sync.py stamps
+  # each namespace with server:id (this install's CLIENT_UUID). If this
+  # namespace already belongs to another server, say so loudly instead
+  # of silently taking over its panel URL and subscriptions.
+  local kv_body kv_code existing_server
+  kv_body=$(curl -s --max-time 15 -w '\n%{http_code}' \
+    "${CF_API}/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${ns_id}/values/server:id" \
+    -H "Authorization: Bearer ${CF_API_TOKEN}" 2>/dev/null || echo "000")
+  kv_code=$(printf '%s' "${kv_body}" | tail -1)
+  existing_server=$(printf '%s' "${kv_body}" | head -n -1)
+  if [ "${kv_code}" = "200" ] && [ -n "${existing_server}" ] \
+     && [ -n "${CLIENT_UUID:-}" ] && [ "${existing_server}" != "${CLIENT_UUID}" ]; then
+    echo "WARNING: this KV namespace already belongs to another server (server:id ${existing_server})."
+    echo "Sharing one Worker + KV between servers mixes their panel URLs and subscriptions."
+    echo "Give this server its own names and re-run, e.g.:"
+    echo "  WORKER_NAME=sui-sub-2 KV_TITLE=sui-sub-2 sudo -E bash install.sh deploy-worker"
+    echo "Continuing with the shared namespace in 10s (Ctrl-C to stop)..."
+    sleep 10
+  fi
 
   # Upload worker (multipart: metadata + module). The SUB_SECRET is sent
   # as a plain-text variable binding so the worker can require it in
@@ -677,6 +755,8 @@ cmd_install() {
   cp "${BUNDLE_DIR}/sync.py" "${BUNDLE_DIR}/sui_setup.py" "${BUNDLE_DIR}/worker.js" "${DIR}/" \
     || die "bundle scripts not found next to install.sh"
   chmod 700 "${DIR}/sync.py" "${DIR}/sui_setup.py"
+  install_global_command \
+    || echo "warning: could not install the global sui-vpn command (use bash install.sh from this directory)"
   init_panel_db
   write_units
   : >> "${TLOG}"
@@ -887,6 +967,7 @@ cmd_restore() {
 
 cmd_uninstall() {
   need_root uninstall
+  remove_global_command
   systemctl disable --now sui-sync.timer >/dev/null 2>&1 || true
   systemctl disable --now sui-panel-tunnel >/dev/null 2>&1 || true
   systemctl disable --now sui-tunnel >/dev/null 2>&1 || true
@@ -903,6 +984,7 @@ cmd_uninstall() {
 cmd_help() {
   cat <<'EOF'
 usage: bash install.sh <command>
+       (after install, from any directory: sudo sui-vpn <command>)
   install        full install (panel + tunnels + worker + sync timer)
   show           panel URL, tunnel URL, fixed subscription URL
   status         service states + tunnel logs + last sync
