@@ -171,8 +171,12 @@ Routing / GeoIP rules).
 - **Exit IP is the VPS IP.** The tunnel hides the VPS IP from the
   networks that filter it; traffic still exits from that IP.
 - Cloudflare free tier: 100k Worker requests/day, 100k KV reads/day,
-  1k KV writes/day — far above what a panel + a few dozen users need.
-  The sync writes to KV only when something actually changed.
+  1k KV writes/day. Only requests that actually hit the Worker count
+  toward the 100k — subscription fetches and panel page loads, a few
+  hundred a day at most. **VPN data traffic through the quick tunnel is
+  not a Worker request and does not count at all**: it goes client →
+  Cloudflare edge → `cloudflared` and never touches the Worker. The
+  sync writes to KV only when something actually changed.
 
 ## License
 
