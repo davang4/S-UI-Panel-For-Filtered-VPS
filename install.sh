@@ -912,7 +912,7 @@ EOF
   # The panel reads settings from the DB per request; restart it so the
   # new value is picked up for sure.
   if [ -n "${SUB_SECRET:-}" ]; then
-    local sub_uri="https://${WORKER_NAME}.${sub}.workers.dev/sub/${SUB_SECRET}/"
+    local sub_uri="https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev/sub/${SUB_SECRET}/"
     python3 - "${DBFILE}" "${sub_uri}" <<'PYEOF' || { echo "warning: could not set panel subURI in DB"; return 0; }
 import sqlite3, sys
 db, uri = sys.argv[1], sys.argv[2]

@@ -5,6 +5,14 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-24
 
+- **Fix: fresh installs crashed after the worker upload
+  (`install.sh: line 915: sub: unbound variable`).** The subdomain
+  refactor renamed `sub` to `SUBDOMAIN` but missed the panel subURI
+  step, so `set -u` killed the install right after printing the
+  worker URL (worker + KV were already created; the SAVE block, sync
+  timer and first sync never ran). Re-running the installer picks up
+  where it left off. Regression test asserts no stale
+  `${sub}.workers.dev` reference remains.
 - **No shared fingerprint in the fixed address.** The Worker name and
   the workers.dev subdomain are now custom per user: a fresh install
   asks for a Worker name (or takes a random prefix-free one), and the
