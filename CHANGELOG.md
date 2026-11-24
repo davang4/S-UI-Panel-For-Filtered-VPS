@@ -5,6 +5,17 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-24
 
+- **Fix: moving a server to new Worker/KV names did not actually move
+  the KV.** `resolve_worker_names` read the "stored" title from the
+  shell variables, where the env value given on the command line was
+  already sitting — so it looked stored, the old shared namespace was
+  reused, and only the Worker got the new name (worker `sui-sub-2`
+  existed, no `sui-sub-2` namespace did). Stored names are now read
+  from the state file. Regression test covers the exact case.
+- **Fix: sync after a namespace move wrote nothing.** The sync digest
+  does not cover the namespace, so after a move it reported
+  "unchanged" and never wrote to the new namespace. `deploy-worker`
+  now resets `sync-state.json` when the namespace changes.
 - Multiple servers, one Cloudflare account: `WORKER_NAME` / `KV_TITLE`
   env overrides (stored in `state.env`), so each server gets its own
   Worker + KV namespace. Sharing one Worker + KV between servers used

@@ -477,7 +477,16 @@ resolve_worker_names() {
   # stored from a previous deploy (state.env), then the defaults.
   # Sets WORKER_NAME / KV_TITLE and remembers the stored KV title in
   # STORED_KV_TITLE for the reuse decision below.
-  local stored_name="${WORKER_NAME:-}" stored_title="${KV_TITLE:-}"
+  # NOTE: the stored values are read from the state FILE, not the shell
+  # variables — an env value given on the command line is already in the
+  # shell variables at this point, and mistaking it for "stored" made
+  # the installer reuse the old shared namespace when moving a server
+  # to new names (the worker got the new name, the KV did not).
+  local stored_name="" stored_title=""
+  if [ -f "${STATE}" ]; then
+    stored_name=$(grep '^WORKER_NAME=' "${STATE}" 2>/dev/null | tail -n 1 | cut -d= -f2-)
+    stored_title=$(grep '^KV_TITLE=' "${STATE}" 2>/dev/null | tail -n 1 | cut -d= -f2-)
+  fi
   WORKER_NAME="${WORKER_NAME_REQ:-${stored_name:-sui-sub}}"
   KV_TITLE="${KV_TITLE_REQ:-${stored_title:-sui-sub}}"
   STORED_KV_TITLE="${stored_title}"
@@ -574,7 +583,8 @@ deploy_worker() {
   # the worker is already bound to — creating a second namespace with
   # the same title would leave the worker reading the old, now-stale
   # one. So: look up by title FIRST, create only if absent.
-  local resp ns_id
+  local resp ns_id old_ns_id
+  old_ns_id="${KV_NAMESPACE_ID:-}"
   if [ -n "${KV_NAMESPACE_ID:-}" ] && kv_reuse_allowed; then
     ns_id="${KV_NAMESPACE_ID}"
     echo "reusing KV namespace: ${ns_id}"
@@ -593,6 +603,13 @@ for n in d.get('result') or []:
     fi
   fi
   [ -n "${ns_id}" ] || { echo "KV namespace create failed: ${resp}"; return 1; }
+  if [ -n "${old_ns_id}" ] && [ "${ns_id}" != "${old_ns_id}" ]; then
+    # Moved to a different namespace: the sync digest does not cover the
+    # namespace, so drop the old sync state — otherwise the next sync
+    # would report "unchanged" and never write to the new namespace.
+    rm -f "${DIR}/sync-state.json"
+    echo "moved to a new KV namespace; sync state reset so the next sync writes everything there"
+  fi
   set_state KV_NAMESPACE_ID "${ns_id}"
   export KV_NAMESPACE_ID="${ns_id}"
   echo "KV namespace ready: ${ns_id}"
