@@ -362,12 +362,43 @@ deploy_worker() {
     [ -n "${CF_API_TOKEN}" ] || { echo "no token given; skipping worker deploy"; return 1; }
     set_state CF_API_TOKEN "${CF_API_TOKEN}"
   fi
+  export CF_API_TOKEN
+
+  # Verify the token before doing anything else, so a wrong token or a
+  # token without Workers permissions fails here with a clear message
+  # instead of halfway through the deploy.
+  local verify tok_ok
+  verify=$(cf_api GET "/user/tokens/verify")
+  tok_ok=$(printf '%s' "${verify}" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('success'))" 2>/dev/null)
+  if [ "${tok_ok}" != "True" ]; then
+    echo "Cloudflare token check failed: ${verify}"
+    echo "Check the token and its permissions (Account > Workers Scripts > Edit,"
+    echo "Account > Workers KV Storage > Edit), then re-run deploy-worker."
+    return 1
+  fi
+
+  # Pick the account automatically: most tokens see exactly one account.
+  # With several, list them and ask which one; with none, the token is
+  # useless for this deploy.
   if [ -z "${CF_ACCOUNT_ID:-}" ]; then
-    read -r -p "Cloudflare Account ID (dash.cloudflare.com -> Workers & Pages, right sidebar): " CF_ACCOUNT_ID
+    local accts count
+    accts=$(cf_api GET "/accounts?per_page=100")
+    count=$(printf '%s' "${accts}" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('result') or []))" 2>/dev/null)
+    if [ "${count}" = "1" ]; then
+      CF_ACCOUNT_ID=$(printf '%s' "${accts}" | python3 -c "import sys,json;d=json.load(sys.stdin);print((d.get('result') or [{}])[0].get('id',''))" 2>/dev/null)
+      echo "using Cloudflare account: ${CF_ACCOUNT_ID}"
+    elif [ -n "${count}" ] && [ "${count}" -gt 1 ]; then
+      echo "this token can see ${count} accounts:"
+      printf '%s' "${accts}" | python3 -c "import sys,json;d=json.load(sys.stdin);[print('  '+str(a.get('id'))+'  '+str(a.get('name',''))) for a in d.get('result') or []]" 2>/dev/null
+      read -r -p "Cloudflare Account ID: " CF_ACCOUNT_ID
+    else
+      echo "this token cannot see any Cloudflare account: ${accts}"
+      return 1
+    fi
     [ -n "${CF_ACCOUNT_ID}" ] || { echo "no account id given; skipping worker deploy"; return 1; }
     set_state CF_ACCOUNT_ID "${CF_ACCOUNT_ID}"
   fi
-  export CF_API_TOKEN CF_ACCOUNT_ID
+  export CF_ACCOUNT_ID
 
   # KV namespace (create or reuse). Re-deploying must reuse the namespace
   # the worker is already bound to — creating a second "sui-sub" namespace
@@ -425,12 +456,25 @@ EOF
   [ "${ok}" = "True" ] || { echo "worker upload failed: ${resp}"; return 1; }
   echo "worker uploaded: ${WORKER_NAME}"
 
-  # Enable workers.dev route + get account subdomain
+  # Enable workers.dev route + get account subdomain. If the account
+  # never registered a workers.dev subdomain, register one automatically
+  # (a random sui-<hex> name; the name is only an address, never shown
+  # to clients as anything meaningful) — otherwise the worker has no
+  # fixed address at all.
   cf_api POST "/accounts/${CF_ACCOUNT_ID}/workers/scripts/${WORKER_NAME}/subdomain" '{"enabled":true}' >/dev/null
   resp=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/workers/subdomain")
   local sub
   sub=$(printf '%s' "${resp}" | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('subdomain',''))" 2>/dev/null)
-  [ -n "${sub}" ] || { echo "could not read workers.dev subdomain: ${resp}"; return 1; }
+  if [ -z "${sub}" ]; then
+    local i candidate ok
+    for i in 1 2 3 4 5; do
+      candidate="sui-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-8)"
+      resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"${candidate}\"}")
+      ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
+      if [ "${ok}" = "True" ]; then sub="${candidate}"; echo "registered workers.dev subdomain: ${sub}"; break; fi
+    done
+  fi
+  [ -n "${sub}" ] || { echo "could not read or register a workers.dev subdomain: ${resp}"; echo "Register one in the dashboard (Workers & Pages) and re-run deploy-worker."; return 1; }
   set_state WORKER_URL "https://${WORKER_NAME}.${sub}.workers.dev"
   echo "worker URL: https://${WORKER_NAME}.${sub}.workers.dev"
 

@@ -59,6 +59,14 @@ dash.cloudflare.com → My Profile → API Tokens → Create Token, with:
 No zone permissions are needed. A token with these two permissions
 cannot touch your domains, DNS records, or tunnels.
 
+That token is the **only manual Cloudflare step**. Everything else on
+the Cloudflare side is automatic: the installer verifies the token,
+picks the account (asking only if the token sees several), registers
+a `workers.dev` subdomain if the account has none, creates or reuses
+the KV namespace, uploads the Worker, and enables its `workers.dev`
+route. The one thing no script can do for you is create that first
+token — Cloudflare needs a human to create the first credential.
+
 It also asks for nothing else: usernames, passwords, the panel's secret
 path, the WS path and the subscription secret are all generated
 on-server. **Save the block printed at the end** — the panel password
