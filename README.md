@@ -79,6 +79,23 @@ path, the WS path and the subscription secret are all generated
 on-server. **Save the block printed at the end** — the panel password
 and your subscription URL are shown once.
 
+**Ports.** The installer uses three localhost ports: panel `2095`,
+subscription server `2096`, inbound `10087`. If one is already taken
+by another program, the installer says so and lets you type a
+different one — press Enter to take the random free port it suggests.
+When stdin is not a terminal (e.g. the install is pasted into a
+detached tmux session), it picks a random free port itself and tells
+you which one. A port already used by our own s-ui is kept silently,
+so re-running the installer never moves the panel. To choose the ports
+yourself up front:
+
+```bash
+PANEL_PORT=12095 SUB_PORT=12096 IN_PORT=11087 sudo -E bash install.sh install
+```
+
+The resolved ports are saved in `~/sui-vpn/state.env`, so re-runs and
+`sui_setup.py` keep using them.
+
 ## What gets installed — and what does not
 
 | Installed | Untouched |

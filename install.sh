@@ -6,6 +6,10 @@
 # (webPath, generated on-server). Inbound binds 127.0.0.1 only.
 # Opens NO public ports, changes NO firewall, touches nothing else on the server.
 # Ports are overridable: PANEL_PORT / SUB_PORT / IN_PORT env vars.
+# If a port is already taken by another program, the installer says so
+# and lets you type a different one (Enter = a random free port), or
+# picks one itself when stdin is not a terminal (e.g. pasted into tmux).
+# Resolved ports are saved in state.env, so re-runs keep them.
 # s-ui is fetched from its GitHub releases and defaults to the NEWEST
 # release (latest/download), so a fresh install always gets the current
 # version. Set SUI_VERSION=x.y.z to pin one deliberately instead, e.g.
@@ -60,6 +64,74 @@ need_root() {
   fi
 }
 
+port_in_use() {
+  # port_in_use PORT — 0 if something listens on it (TCP). No ss → assume free.
+  command -v ss >/dev/null 2>&1 || return 1
+  ss -ltn 2>/dev/null | grep -q ":${1} "
+}
+
+port_listener() {
+  # port_listener PORT — process name listening on it, or empty.
+  ss -ltnp 2>/dev/null | grep ":${1} " | head -1 \
+    | sed -n 's/.*users:(("\([^"]*\)".*/\1/p'
+}
+
+valid_free_port() {
+  # valid_free_port CANDIDATE OTHER1 OTHER2 — numeric, 1024-65535,
+  # not listening, and not one of the other two ports.
+  local c="$1"
+  case "${c}" in ''|*[!0-9]*) return 1 ;; esac
+  [ "${c}" -ge 1024 ] && [ "${c}" -le 65535 ] || return 1
+  [ "${c}" != "${2:-}" ] && [ "${c}" != "${3:-}" ] || return 1
+  port_in_use "${c}" && return 1
+  return 0
+}
+
+random_free_port() {
+  # random_free_port OTHER1 OTHER2 — print a random free port (20000-59999).
+  local i p
+  for i in $(seq 1 100); do
+    p=$((20000 + RANDOM % 40000))
+    if valid_free_port "${p}" "${1:-}" "${2:-}"; then echo "${p}"; return 0; fi
+  done
+  return 1
+}
+
+resolve_port() {
+  # resolve_port VAR LABEL OTHER1 OTHER2 — if $VAR is taken by a foreign
+  # process, ask for another port (interactive) or auto-pick a random
+  # free one (non-interactive, e.g. pasted into tmux). A port our own
+  # s-ui listens on is kept silently (re-run safety).
+  local var="$1" label="$2" o1="$3" o2="$4" port owner suggestion answer
+  port="${!var}"
+  port_in_use "${port}" || return 0
+  owner=$(port_listener "${port}")
+  case "${owner}" in
+    sui|sing-box|xray)
+      echo "port ${port} (${label}) already used by our s-ui — keeping it"
+      return 0 ;;
+  esac
+  echo "port ${port} (${label}) is already in use${owner:+ by ${owner}}; the install needs a different one."
+  suggestion=$(random_free_port "${o1}" "${o2}") \
+    || die "could not find a free port for ${label}; set one explicitly, e.g. ${var}=12345 sudo -E bash install.sh install"
+  if [ -t 0 ]; then
+    while :; do
+      printf 'Enter a different port for %s (1024-65535), or press Enter to use %s: ' "${label}" "${suggestion}"
+      read -r answer || answer=""
+      if [ -z "${answer}" ]; then port="${suggestion}"; else port="${answer}"; fi
+      if valid_free_port "${port}" "${o1}" "${o2}"; then break; fi
+      echo "port ${port} is not usable (must be 1024-65535, free, and different from ${o1}/${o2})."
+      suggestion=$(random_free_port "${o1}" "${o2}") \
+        || die "could not find a free port for ${label}; set one explicitly, e.g. ${var}=12345 sudo -E bash install.sh install"
+    done
+  else
+    echo "non-interactive shell: using free port ${suggestion} for ${label} automatically."
+    port="${suggestion}"
+  fi
+  printf -v "${var}" '%s' "${port}"
+  echo "${label} port: ${port}"
+}
+
 preflight() {
   if [ -r /etc/os-release ]; then
     . /etc/os-release
@@ -76,16 +148,9 @@ preflight() {
   if [ "${avail_kb}" -lt 1048576 ]; then
     die "less than 1GB free disk on ${TARGET_HOME} (free: $((avail_kb/1024))MB)"
   fi
-  local p
-  for p in "${PANEL_PORT}" "${SUB_PORT}" "${IN_PORT}"; do
-    if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":${p} "; then
-      if systemctl is-active --quiet sui-panel 2>/dev/null; then
-        echo "port ${p} already used by sui-panel (re-run OK)"
-      else
-        die "port ${p} already in use by another process; aborting without changes"
-      fi
-    fi
-  done
+  resolve_port PANEL_PORT panel "${SUB_PORT}" "${IN_PORT}"
+  resolve_port SUB_PORT "subscription server" "${PANEL_PORT}" "${IN_PORT}"
+  resolve_port IN_PORT "VLESS inbound" "${PANEL_PORT}" "${SUB_PORT}"
   command -v curl >/dev/null 2>&1 || die "curl is required"
   command -v python3 >/dev/null 2>&1 || die "python3 is required"
   command -v systemctl >/dev/null 2>&1 || die "systemd is required"
@@ -161,6 +226,9 @@ gen_state() {
     echo "PANEL_PASS=${pass}"
     echo "PANEL_BASE_PATH=${basepath}"
     echo "SUB_SECRET=${secret}"
+    echo "PANEL_PORT=${PANEL_PORT}"
+    echo "SUB_PORT=${SUB_PORT}"
+    echo "IN_PORT=${IN_PORT}"
   } > "${STATE}"
   chmod 600 "${STATE}"
   echo "generated state (stored in ${STATE}, mode 600)"
@@ -180,6 +248,41 @@ set_state() {
     echo "${key}=${val}" >> "${STATE}"
   fi
   chmod 600 "${STATE}"
+}
+
+load_db_ports() {
+  # Best-effort: on a re-run with a state file from before ports were
+  # stored, keep the panel bindings already in the s-ui DB instead of
+  # falling back to the defaults (which would move the panel). Anything
+  # it cannot read simply stays at the current value.
+  [ -f "${DBFILE}" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  local out web sub inb
+  out=$(python3 - "${DBFILE}" <<'PYEOF' 2>/dev/null || true
+import sqlite3, json, sys
+con = sqlite3.connect(sys.argv[1])
+def get(k):
+    r = con.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
+    return r[0] if r else ""
+web, sub = get("webPort"), get("subPort")
+inb = ""
+try:
+    for (cfg,) in con.execute("SELECT config FROM inbounds"):
+        j = json.loads(cfg)
+        if j.get("protocol") == "vless" and j.get("port"):
+            inb = str(j["port"]); break
+except Exception:
+    pass
+print(web, sub, inb)
+PYEOF
+)
+  read -r web sub inb <<< "${out}"
+  [ -n "${web}" ] || return 1
+  PANEL_PORT="${web}"
+  [ -n "${sub}" ] && SUB_PORT="${sub}"
+  [ -n "${inb}" ] && IN_PORT="${inb}"
+  echo "keeping panel ports from the existing install: ${PANEL_PORT}/${SUB_PORT}/${IN_PORT}"
+  return 0
 }
 
 ensure_base_path() {
@@ -554,10 +657,21 @@ run_checks() {
 
 cmd_install() {
   need_root install
+  if [ -f "${STATE}" ]; then
+    load_state
+    if ! grep -q '^PANEL_PORT=' "${STATE}" 2>/dev/null; then
+      load_db_ports || true
+    fi
+  fi
   preflight
   mkdir -p "${DIR}" "${BIN}"
   download_binaries
   gen_state
+  # Persist the (possibly re-resolved) ports so re-runs and sui_setup.py
+  # use the same ones instead of falling back to the defaults.
+  set_state PANEL_PORT "${PANEL_PORT}"
+  set_state SUB_PORT "${SUB_PORT}"
+  set_state IN_PORT "${IN_PORT}"
   ensure_base_path
   # ship runtime scripts next to state (sync.py / sui_setup.py read state.env beside them)
   cp "${BUNDLE_DIR}/sync.py" "${BUNDLE_DIR}/sui_setup.py" "${BUNDLE_DIR}/worker.js" "${DIR}/" \
