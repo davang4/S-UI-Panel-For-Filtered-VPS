@@ -247,9 +247,10 @@ WORKER_NAME=my-panel KV_TITLE=my-panel WORKERS_SUBDOMAIN=myname42 sudo -E bash i
 The workers.dev subdomain belongs to the Cloudflare **account**, not
 to one server — every worker on the account shares it, and the fixed
 address is always `<worker-name>.<subdomain>.workers.dev` (there is
-no single-label `<name>.workers.dev`). An account that already has a
-subdomain keeps it; to replace it with a custom one, run on any one
-server:
+no single-label `<name>.workers.dev`). On a fresh install the
+installer asks first when the account already has a subdomain —
+keep it, or type a custom one — instead of silently keeping a name
+you never chose. On an already-installed server, change it with:
 
 ```bash
 sudo sui-vpn change-subdomain myname42

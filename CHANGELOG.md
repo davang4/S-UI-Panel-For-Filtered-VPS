@@ -5,6 +5,12 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-24
 
+- **Ask first: a fresh install now asks keep-or-change for an
+  existing subdomain.** An account that already had a subdomain used
+  to be kept silently, so a user who wanted the old name gone never
+  got asked. Now a fresh interactive install shows the current
+  subdomain and lets the user keep it (Enter) or type a custom one;
+  re-installs and non-interactive runs still keep it silently.
 - **New: `change-subdomain [name]` replaces the account's workers.dev
   subdomain.** The fixed address is always
   `<worker>.<subdomain>.workers.dev` — the subdomain belongs to the

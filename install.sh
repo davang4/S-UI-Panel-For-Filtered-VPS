@@ -575,21 +575,59 @@ current_subdomain() {
     | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('subdomain',''))" 2>/dev/null
 }
 
+put_subdomain() {
+  # PUT a new workers.dev subdomain for the account. Returns 0 when
+  # Cloudflare accepts it; on failure prints the API response.
+  local resp ok
+  resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"$1\"}")
+  ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
+  if [ "${ok}" = "True" ]; then return 0; fi
+  echo "${resp}"
+  return 1
+}
+
+ask_keep_or_change_subdomain() {
+  # SUBDOMAIN holds the account's current subdomain. On a fresh install
+  # the user gets to keep it or type a custom one — never silently keep
+  # a name they never chose. Changing it changes the fixed address of
+  # EVERY worker on the account, so say so. Returns 0 on success.
+  local answer resp
+  echo "Your account's workers.dev subdomain is '${SUBDOMAIN}'."
+  echo "Changing it changes the fixed address of EVERY worker on this account."
+  echo "Press Enter to keep '${SUBDOMAIN}', or type a new custom subdomain."
+  printf 'Subdomain (Enter to keep %s): ' "${SUBDOMAIN}"
+  read -r answer || answer=""
+  [ -z "${answer}" ] && return 0
+  answer="$(printf '%s' "${answer}" | tr 'A-Z' 'a-z')"
+  valid_subdomain "${answer}" || { echo "'${answer}' is not a valid subdomain (lowercase letters, digits, hyphens; 1-63 chars). To change it later: sudo sui-vpn change-subdomain <name>"; return 1; }
+  [ "${answer}" = "${SUBDOMAIN}" ] && return 0
+  resp=$(put_subdomain "${answer}") || { echo "Cloudflare did not accept '${answer}': ${resp}. To change it later: sudo sui-vpn change-subdomain <name>"; return 1; }
+  echo "workers.dev subdomain changed: ${SUBDOMAIN} -> ${answer}"
+  SUBDOMAIN="${answer}"
+  return 0
+}
+
 register_subdomain() {
   # Sets SUBDOMAIN (global) to the account's workers.dev subdomain.
   # If the account has none, registers one — an explicit
   # WORKERS_SUBDOMAIN, a custom name the user types, or a random one.
   # Never a shared/predictable name: one filter rule on a shared
   # address would block every repo user at once. Returns 0 on success.
-  local resp candidate ok tries suggestion answer
+  # If the account already HAS one, a fresh interactive install asks
+  # keep-or-change instead of silently keeping a name the user never
+  # chose; a re-install keeps it silently.
+  local candidate tries suggestion answer
   SUBDOMAIN=$(current_subdomain)
-  [ -n "${SUBDOMAIN}" ] && return 0
+  if [ -n "${SUBDOMAIN}" ]; then
+    if [ "${FRESH_DEPLOY:-0}" = "1" ] && [ -t 0 ]; then
+      ask_keep_or_change_subdomain || return 1
+    fi
+    return 0
+  fi
   if [ -n "${WORKERS_SUBDOMAIN:-}" ]; then
     candidate="$(printf '%s' "${WORKERS_SUBDOMAIN}" | tr 'A-Z' 'a-z')"
     if valid_subdomain "${candidate}"; then
-      resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"${candidate}\"}")
-      ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
-      if [ "${ok}" = "True" ]; then
+      if put_subdomain "${candidate}"; then
         SUBDOMAIN="${candidate}"; echo "registered workers.dev subdomain: ${SUBDOMAIN}"; return 0
       fi
       echo "WORKERS_SUBDOMAIN '${candidate}' was not accepted (taken or invalid)."
@@ -619,14 +657,12 @@ register_subdomain() {
     else
       candidate=$(random_name)
     fi
-    resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"${candidate}\"}")
-    ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
-    if [ "${ok}" = "True" ]; then
+    if put_subdomain "${candidate}"; then
       SUBDOMAIN="${candidate}"; echo "registered workers.dev subdomain: ${SUBDOMAIN}"; return 0
     fi
     echo "subdomain '${candidate}' was not accepted (taken or invalid); trying another..."
   done
-  echo "could not register a workers.dev subdomain: ${resp}"
+  echo "could not register a workers.dev subdomain."
   echo "Register one in the dashboard (Workers & Pages) and re-run deploy-worker."
   return 1
 }
@@ -805,6 +841,12 @@ deploy_worker() {
   set_state WORKER_NAME "${WORKER_NAME}"
   set_state KV_TITLE "${KV_TITLE}"
 
+  # Fresh deploy (no stored worker name): prompts that ask keep-or-change
+  # for things the account already has (e.g. an existing subdomain)
+  # fire only here — a re-install of this same server keeps its values
+  # silently instead of nagging.
+  if [ -z "${STORED_WORKER_NAME}" ]; then FRESH_DEPLOY=1; else FRESH_DEPLOY=0; fi
+
   # Fresh install, no explicit name: never use a shared default Worker
   # name — it would be the first label of every user's fixed address.
   if [ -z "${STORED_WORKER_NAME}" ] && [ -z "${WORKER_NAME_REQ}" ]; then
@@ -963,7 +1005,7 @@ cmd_change_subdomain() {
   [ -n "${CF_API_TOKEN:-}" ] || { echo "no Cloudflare token in state; run install first"; return 1; }
   [ -n "${CF_ACCOUNT_ID:-}" ] || { echo "no Cloudflare account in state; run install first"; return 1; }
   [ -n "${WORKER_NAME:-}" ] || { echo "no Worker name in state; run install first"; return 1; }
-  local current new_name resp ok suggestion
+  local current new_name resp suggestion
   current=$(current_subdomain)
   echo "current workers.dev subdomain: ${current:-none}"
   echo "This changes the fixed address of EVERY worker on this Cloudflare account."
@@ -988,9 +1030,7 @@ cmd_change_subdomain() {
     echo "already '${new_name}'; nothing to change."
     return 0
   fi
-  resp=$(cf_api PUT "/accounts/${CF_ACCOUNT_ID}/workers/subdomain" "{\"subdomain\":\"${new_name}\"}")
-  ok=$(printf '%s' "${resp}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('success'))" 2>/dev/null)
-  [ "${ok}" = "True" ] || { echo "Cloudflare did not accept '${new_name}': ${resp}"; return 1; }
+  resp=$(put_subdomain "${new_name}") || { echo "Cloudflare did not accept '${new_name}': ${resp}"; return 1; }
   echo "workers.dev subdomain changed: ${current} -> ${new_name}"
   SUBDOMAIN="${new_name}"
   set_state WORKER_URL "https://${WORKER_NAME}.${SUBDOMAIN}.workers.dev"

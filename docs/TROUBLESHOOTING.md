@@ -77,9 +77,10 @@ README: Multiple servers.
 
 The fixed address is always `<worker>.<subdomain>.workers.dev` —
 the subdomain belongs to the Cloudflare **account** (every server on
-it shares it), the worker name to one server. An account that already
-has a subdomain keeps it; picking a Worker name does not change it.
-To replace it, run on any one server:
+it shares it), the worker name to one server. On a fresh install the
+installer asks keep-or-change for an existing subdomain; picking a
+Worker name does not change it. On an already-installed server, run
+on any one server:
 
 ```bash
 sudo sui-vpn change-subdomain myname42
