@@ -140,3 +140,35 @@ direct to the VPS IP — i.e. only on networks that do not filter that
 IP — and needs a public UDP port plus a TLS certificate (sing-box
 refuses Hysteria2 without TLS). That is a property of the tunnel, not
 a bug in this setup; VLESS+WS is the all-networks path.
+
+## `status` shows FAIL on the last sync
+
+- **`last sync error: …`** — the sync's own error message, e.g. a KV
+  PUT failure or a missing token in `state.env`. Fix the cause, then
+  `sudo bash install.sh sync-now` (or wait for the next 60 s tick;
+  a failed run keeps its old digest, so it retries the writes).
+- **`last sync stale: Ns ago`** — the timer has not run a sync in
+  over 10 minutes. Check `systemctl status sui-sync.timer` and
+  `journalctl -u sui-sync.service -n 20`; a common cause is the timer
+  being disabled after a restore (re-run `install` to re-enable it).
+- **`/sub` FAIL but `/health` PASS** — the Worker is alive but the
+  subscription is not served: usually the KV namespace is wrong (a
+  Worker/KV move without `sync-now --force`), or the client's UUID
+  was deleted/renamed in the panel. Run `sync-now --force` and check
+  `sync-now --dry-run` lists the client.
+
+## A panel routing rule does not apply
+
+- **It was set less than a minute ago** — rules sync on the next 60 s
+  tick; update the subscription in the client app after that.
+- **The rule routes Iran to `proxy`** — it will not take effect: the
+  Worker's built-in Iran bypass is always evaluated first (see README:
+  Panel routing). This is deliberate.
+- **The rule names an outbound the profile does not have** (a
+  server-side tag from the core config, a typo like `outbound:
+  "api"`) **or a rule-set that is not defined anywhere** — the Worker
+  drops that rule so the profile stays valid. Fix the rule in the
+  panel and re-sync; the rest of your rules still apply.
+- **Hiddify / v2rayNG** — they receive only a base64 link, which
+  carries no routing at all. No panel setting can reach them; set
+  the split inside the app itself.

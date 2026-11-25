@@ -128,15 +128,15 @@ same list.
 
 | Command | What it does |
 |---|---|
-| `install` | Full install (panel + tunnels + Worker + sync timer). Re-running it is safe: it keeps existing state and only fills in what is missing. |
+| `install` | Full install (panel + tunnels + Worker + sync timer). Re-running it is safe: it keeps existing state and only fills in what is missing, and snapshots the DB + state first. |
 | `show` | Panel URL, current tunnel URL, fixed subscription URL, panel login. |
-| `status` | Service states, tunnel URLs, last tunnel log lines, last sync run. Start here when something is wrong. |
-| `sync-now` | Sync clients to the Worker right now (the timer does this every 60 s anyway). |
+| `status` | Service states, tunnel URLs, last tunnel log lines, last sync run, and the real health check: worker `/health` + `/sub`, panel through its tunnel, last sync state. Start here when something is wrong. |
+| `sync-now` | Sync clients to the Worker right now (the timer does this every 60 s anyway, and immediately when a tunnel URL changes). |
 | `sync-now --dry-run` | Preview what would sync, including the full links. Writes nothing. |
 | `sync-now --force` | Rewrite everything to KV even if nothing changed locally (use after a Worker/KV move, or when another server overwrote this server's `panel:host`). |
 | `deploy-worker` | Re-upload `worker.js` to Cloudflare after editing it. |
 | `change-subdomain [name]` | Replace the account's workers.dev subdomain with a custom one (it changes the fixed address of every worker on the account; re-run `deploy-worker` on each other server afterwards). |
-| `update-sui` | Replace s-ui with the newest GitHub release. Verifies the new binary runs first and keeps a timestamped backup of the old one. |
+| `update-sui` | Replace s-ui with the newest GitHub release. Verifies the new binary runs first and keeps a timestamped backup of the old one — and snapshots the s-ui DB + state first (`~/sui-vpn/backups/`, last 5 kept). |
 | `panel-on` / `panel-off` | Allow / stop panel access from the internet. Off means the panel is reachable only via SSH forward. |
 | `backup` | Tarball of `~/sui-vpn` (mode 600). Contains every secret — copy it off the server. |
 | `restore <file>` | Restore `~/sui-vpn` from a backup tarball and restart the services. On a fresh server, run `install` afterwards (it keeps the restored state). |
@@ -167,13 +167,21 @@ Worker automatically.
 ### Logs and health
 
 ```bash
-sudo bash install.sh status                 # services + tunnel logs + last sync
+sudo bash install.sh status                 # services + tunnel logs + last sync + health check
 sudo journalctl -u sui-panel -n 50          # panel log
 sudo journalctl -u sui-tunnel -n 50         # tunnel log
 sudo journalctl -u sui-sync.service -n 20   # last sync runs
 curl -s https://<worker>.workers.dev/health   # Worker alive? prints "ok"
 sudo bash install.sh sync-now --dry-run     # what the Worker currently serves
 ```
+
+The health check at the end of `status` is end-to-end, not just
+"is the process alive": it fetches the Worker's `/health`, fetches
+this client's own `/sub` URL from the Worker (KV + Worker + the
+client's key in one call), loads the panel login page **through its
+tunnel**, and reports the last sync run (when it ran, and its error if
+it failed). A `FAIL` line there tells you which hop is actually
+broken, instead of guessing.
 
 ### Backup and restore
 
@@ -291,24 +299,65 @@ sudo sui-vpn sync-now --force
 "worker URL" line; the deploy fails loudly if the token, account, or
 KV step breaks.)
 
-## The Iran split-routing (and how to change it)
+## Panel routing — every setting applies to the whole config
 
-The Worker builds the sing-box JSON profile with an inline rule-set
-(`site-ir`: every `.ir` domain plus the big Iranian services on
-`.com`/`.org`) and the `geoip-ir` rule-set for Iranian IPs; both route
-`direct`. The panel's own routing (its Subscription JSON Extension,
-`subJsonExt`) is synced into the profile too, and the built-in bypass
-is always evaluated first, so a panel template can never silently
-route Iranian traffic back through the VPN.
+Any routing rule you set in the panel reaches the clients: the sync
+reads **all three places** s-ui keeps routing — the Subscription JSON
+Extension (`subJsonExt`, the advanced interface / Rules page), the
+subscription JSON template (`subJson`), and the core config's
+route/dns (`config`) — merges them and publishes them to the Worker
+as `panel:subjson`. Single-value settings (DNS, `final`,
+`default_domain_resolver`) come from the highest-priority source that
+sets them; `rules` and `rule_set` are combined from all three, so a
+rule set in any place applies. A rule takes effect on the next sync
+(within ~60 s) after the client updates its subscription.
+
+Examples — set these in the panel's Subscription JSON Extension:
+
+```json
+{
+  "rules": [
+    { "domain_suffix": ["doubleclick.net", "googlesyndication.com"], "outbound": "block" },
+    { "domain_suffix": [".cn"], "outbound": "direct" }
+  ]
+}
+```
+
+The first blocks ads for every client; the second sends Chinese sites
+direct. The same works for Iranian sites and apps — and the Worker
+keeps its built-in bypass (`site-ir`: every `.ir` domain plus the big
+Iranian services on `.com`/`.org`, and `geoip-ir` for Iranian IPs)
+**first**, so a stock template rule routing Iran to the proxy can
+never silently undo it. The one exception: an explicit rule *you*
+write in the panel that routes Iran to `proxy` will not take effect —
+the bypass is always evaluated first. That is deliberate, not a bug.
+
+Two guardrails: a panel rule naming an outbound the profile does not
+have (a server-side tag from the core config, a typo) is dropped by
+the Worker instead of breaking the profile for every client; and a
+panel rule referencing a rule-set that is not defined anywhere is
+likewise dropped.
 
 This list is Iran-specific. If you need a different country's split,
 edit the `domain_suffix` list in `worker.js` (`site-ir` rule-set) and
 the `geoip-ir` URL, then `install.sh deploy-worker`.
 
-Hiddify / v2rayNG only receive a base64 vless link, which carries no
-routing at all — no panel setting can reach them. For those apps,
+**Hiddify / v2rayNG only receive a base64 vless link, which carries
+no routing at all — no panel setting can reach them.** For those apps,
 configure the split inside the app itself (Hiddify → Settings →
-Routing / GeoIP rules).
+Routing / GeoIP rules). Only the sing-box JSON profile (the official
+sing-box app) carries panel routing.
+
+## Supported versions
+
+- **s-ui:** the installer fetches the newest GitHub release by
+  default; pin one with `SUI_VERSION=1.6.8` (the version this repo was
+  first built against).
+- **cloudflared:** pinned to 2026.11.2 with a sha256 check.
+- **sing-box core:** whatever the installed s-ui bundles (the Worker
+  profile targets the current sing-box JSON format).
+- **Cloudflare free tier:** 100k Worker requests/day, 100k KV
+  reads/day, 1k KV writes/day — see Known limits below.
 
 ## Known limits
 

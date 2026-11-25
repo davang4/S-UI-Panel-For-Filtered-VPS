@@ -22,10 +22,12 @@
 // KV values are written by sync.py on the VPS whenever the tunnel hostname,
 // the panel hostname, the client set, or the panel routing changes. This
 // worker never sees the VPS IP. Panel routing lives in KV panel:subjson:
-// sync.py reads s-ui setting `subJsonExt` (the subscription JSON extension)
-// — falling back to the core `config` route/dns when the extension is empty
-// — and the worker merges it into the sing-box profile, translating s-ui's
-// "proxy" outbound tag to the client's real outbound tag.
+// sync.py reads every routing setting in the panel (`subJsonExt`, the
+// `subJson` template, the core `config` route/dns) and the worker merges
+// them into the sing-box profile, translating s-ui's "proxy" outbound tag
+// to the client's real outbound tag. Panel rules naming an outbound the
+// profile does not have are dropped, so a bad panel rule can never break
+// the profile for every client.
 // Panel rules use s-ui's outbound tags ("proxy" for the VPN, "direct",
 // legacy "block"/"dns"); our profile names the VPN outbound after the
 // client, so translate those tags when merging panel rules in.
@@ -46,6 +48,13 @@ function translatePanelTags(value, name) {
 
 function translatePanelRule(rule, name) {
   if (!rule || typeof rule !== "object" || Array.isArray(rule)) return null;
+  // A panel rule naming an outbound the profile does not have (a
+  // server-side tag from the core config, a typo) would make sing-box
+  // reject the whole profile — drop it instead of breaking every
+  // client. Rules without an outbound (action-only: sniff, reject,
+  // hijack-dns) pass through unchanged.
+  if (typeof rule.outbound === "string"
+      && !["proxy", "direct", "block", "dns"].includes(rule.outbound)) return null;
   const r = translatePanelTags(rule, name);
   if (rule.outbound === "block") r.action = "reject";
   if (rule.outbound === "dns") r.action = "hijack-dns";
@@ -97,7 +106,19 @@ function applyPanelRoutes(profile, ext, name) {
     profile.route.rule_set = merged;
   }
   if (Array.isArray(ext.rules) && ext.rules.length) {
-    const panelRules = ext.rules.map((r) => translatePanelRule(r, name)).filter(Boolean);
+    // A rule referencing a rule-set that is not defined anywhere would
+    // make sing-box reject the whole profile — drop it, like an unknown
+    // outbound. The built-in site-ir / geoip-ir always count as defined.
+    const defined = new Set(
+      (profile.route.rule_set || []).map((rs) => rs && rs.tag).filter(Boolean));
+    const panelRules = ext.rules
+      .map((r) => translatePanelRule(r, name))
+      .filter(Boolean)
+      .filter((r) => {
+        if (r.rule_set === undefined) return true;
+        const refs = Array.isArray(r.rule_set) ? r.rule_set : [r.rule_set];
+        return refs.every((t) => typeof t === "string" && defined.has(t));
+      });
     if (panelRules.length) {
       profile.route.rules = [
         { protocol: "dns", action: "hijack-dns" },

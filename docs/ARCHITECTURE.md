@@ -46,7 +46,7 @@ No account, no domain, no credentials: Cloudflare hands out a random
 **The hostnames change on every restart** — by design, everything
 downstream re-reads them.
 
-### Sync (`sui-sync.service` + `sui-sync.timer`, every 60 s)
+### Sync (`sui-sync.service` + `sui-sync.timer` every 60 s + `sui-sync.path`)
 `sync.py` (stdlib only) reads, read-only, from the s-ui SQLite DB:
 
 - enabled, non-expired, under-quota clients → one base64 `vless://`
@@ -60,17 +60,36 @@ downstream re-reads them.
 - this install's identity (`CLIENT_UUID`) → KV `server:id`, so
   `deploy-worker` can tell when a namespace already belongs to
   another server (see README: Multiple servers);
-- the panel's client-side routing: setting `subJsonExt` (the
-  subscription JSON extension), falling back to the core `config`
-  route/dns **only if it mentions Iran** (the stock core config only
-  carries sniff + hijack-dns and must never replace the bypass) →
-  KV `panel:subjson`.
+- the panel's client-side routing, from **all three places** s-ui
+  keeps it: `subJsonExt` (the subscription JSON extension), the
+  `subJson` template, and the core `config` route/dns. Single-value
+  keys (dns, `final`, `default_domain_resolver`) come from the
+  highest-priority source that sets them; `rules` and `rule_set` are
+  combined from all three → KV `panel:subjson`. The worker keeps its
+  built-in Iran bypass first regardless, and drops panel rules naming
+  an unknown outbound or an undefined rule-set, so a bad panel rule
+  can never break the profile for every client.
 
 It writes to KV **only when the digest changed** (KV free tier allows
 1,000 writes/day; a 60 s timer would otherwise burn it). Stale
 `sub:<uuid>` / `sub:<name>` keys are deleted when a client is removed
 or renamed. `--dry-run` prints everything it would sync, including the
 full links.
+
+Two more mechanisms keep the sync honest:
+
+- **`sui-sync.path`** (systemd path unit) triggers a sync the moment a
+  tunnel log changes — a quick tunnel gets a new hostname on every
+  restart, and waiting for the 60 s timer would leave the old address
+  in KV for up to a minute. The timer stays as the safety net.
+- **Retries + run state.** Each Cloudflare API call is retried with
+  backoff (3 attempts) on transient failure; a 403/404 is reported at
+  once, never retried. Every run records `last_run` (epoch) and
+  `last_error` in `sync-state.json`, which `status` / `run_checks`
+  reads — so a stuck timer or a failing sync is visible instead of
+  silent. The journal lines never print secrets: UUIDs are masked,
+  the panel host is not repeated, and a failed KV write names the
+  client by name, not by UUID.
 
 ### Worker (`worker.js`, Cloudflare Workers, module format)
 One fixed `https://sui-sub.<subdomain>.workers.dev` address, three jobs:
@@ -81,8 +100,10 @@ One fixed `https://sui-sub.<subdomain>.workers.dev` address, three jobs:
    instead returns a **full sing-box JSON profile** built by decoding
    that same link (tun + mixed inbounds, VLESS-WS outbound with
    TLS/uTLS-chrome, DNS + routing) — the official sing-box app refuses
-   base64 remote profiles. Without a `SUB_SECRET` variable set, the
-   legacy `/sub/<id>` form also works.
+   base64 remote profiles. Panel routing from KV `panel:subjson`
+   merges in (bypass first; panel rules with an unknown outbound or
+   an undefined rule-set are dropped). Without a `SUB_SECRET` variable
+   set, the legacy `/sub/<id>` form also works.
 3. Any other path → reverse-proxy to the panel: it fetches
    `https://<panel:host><path>` and rewrites `Origin`/`Referer` to the
    panel hostname, because s-ui's SameOrigin guard rejects POSTs whose

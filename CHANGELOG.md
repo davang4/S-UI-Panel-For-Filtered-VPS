@@ -3,6 +3,57 @@
 All notable changes to this project, in reverse chronological order.
 Dates are in Asia/Tehran time.
 
+## 2026-11-25
+
+- **Real health check in `status`.** `run_checks` used to call a
+  process "alive" and stop there. It now also fetches the Worker's
+  `/health`, fetches this client's own `/sub` URL from the Worker
+  (KV + Worker + the client's key in one call), loads the panel login
+  page through its own tunnel, and reports the last sync run (when
+  it ran, and its error if it failed). `status` runs the same checks.
+- **Auto-backup before a change.** `update-sui` and a re-install now
+  snapshot the s-ui DB + state to `~/sui-vpn/backups/` (last 5 kept,
+  mode 600) before touching anything, so a bad new binary can never
+  take the clients and secrets with it. The manual `backup` command
+  is unchanged.
+- **Sync is immediate on a tunnel change, and honest about failure.**
+  A new `sui-sync.path` unit triggers a sync the moment a tunnel log
+  changes (a quick tunnel gets a new hostname on every restart; the
+  60 s timer would leave the old address in KV for up to a minute).
+  Each Cloudflare API call is retried with backoff (3 attempts) on
+  transient failure; 403/404 is reported at once, never retried.
+  Every run records `last_run` + `last_error` in `sync-state.json`,
+  which `status` reads.
+- **Secrets audit + rotation docs.** The sync timer's journal lines
+  no longer print secret values: a stamped server id shows its first
+  8 characters, a failed KV write names the client by name (not by
+  UUID), and a panel-host change is logged without the hostname.
+  `docs/SECURITY.md` now documents what is printed where, and how to
+  rotate the Cloudflare token, the SUB_SECRET, the panel password, or
+  one client's UUID when something leaks. Nothing that the user
+  reads — the SAVE block, `show`, `--dry-run` — changed.
+- **Panel routing now applies from everywhere in the panel.** The
+  sync used to read only `subJsonExt`, falling back to the core
+  `config` route/dns only when it mentioned Iran. It now reads all
+  three routing sources (`subJsonExt`, the `subJson` template, the
+  core `config` route/dns): single-value settings come from the
+  highest-priority source, `rules` and `rule_set` are combined from
+  all three. The Worker still evaluates its built-in Iran bypass
+  first (an explicit Iran→proxy panel rule will not take effect), and
+  now drops panel rules naming an unknown outbound or an undefined
+  rule-set instead of letting one bad rule break the profile for
+  every client. Panel routing still reaches only the sing-box JSON
+  profile — Hiddify/v2rayNG get a base64 link with no routing.
+- **Docs:** a "Panel routing" guide in both READMEs (where to set
+  rules, examples for ads/China/Iran, the bypass exception, the
+  base64 limit), a "Supported versions" section, a key-rotation
+  section in `docs/SECURITY.md`, and new troubleshooting entries
+  (last-sync failures, a panel rule that does not apply).
+- **Tests:** `tests/` now ships with the repo — sync routing merge +
+  masking + retry, the worker's rule guards, and the installer's
+  health check + pre-change backup — so these behaviours are checked
+  on every change, not just by hand.
+
 ## 2026-11-24
 
 - **Ask first: a fresh install now asks keep-or-change for an

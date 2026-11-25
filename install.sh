@@ -77,6 +77,7 @@ TUN_UNIT="/etc/systemd/system/sui-tunnel.service"
 PANEL_TUN_UNIT="/etc/systemd/system/sui-panel-tunnel.service"
 SYNC_UNIT="/etc/systemd/system/sui-sync.service"
 TIMER_UNIT="/etc/systemd/system/sui-sync.timer"
+PATH_UNIT="/etc/systemd/system/sui-sync.path"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -418,7 +419,43 @@ Unit=sui-sync.service
 [Install]
 WantedBy=timers.target
 EOF
+  cat > "${PATH_UNIT}" <<EOF
+[Unit]
+Description=sui-vpn sync on tunnel URL change (quick tunnels get a new
+hostname on every restart; waiting for the 60s timer would leave the
+old address in KV for up to a minute)
+
+[Path]
+PathChanged=${TLOG}
+PathChanged=${PTLOG}
+Unit=sui-sync.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
   systemctl daemon-reload
+}
+
+backup_before_change() {
+  # Snapshot the s-ui DB + state.env (+ last sync state) before a change
+  # that could touch them (update-sui, reinstall). No-op on a fresh
+  # install (nothing to back up). Keeps the last 5 snapshots, mode 600.
+  # Same caveat as `backup`: a live SQLite copy, taken while the panel
+  # runs — good enough to restore from, like the manual backup.
+  local files=() stamp dest
+  [ -f "${DBFILE}" ] && files+=(db/s-ui.db)
+  [ -f "${STATE}" ] && files+=(state.env)
+  [ -f "${DIR}/sync-state.json" ] && files+=(sync-state.json)
+  [ "${#files[@]}" -gt 0 ] || return 0
+  mkdir -p "${DIR}/backups"
+  stamp=$(date +%Y%m%d-%H%M%S)
+  dest="${DIR}/backups/pre-change-${stamp}.tar.gz"
+  tar czf "${dest}" -C "${DIR}" "${files[@]}" 2>/dev/null \
+    || { echo "warning: pre-change backup failed"; return 0; }
+  chmod 600 "${dest}"
+  echo "pre-change backup: ${dest}"
+  ls -t "${DIR}"/backups/pre-change-*.tar.gz 2>/dev/null \
+    | tail -n +6 | xargs -r rm -f
 }
 
 _url_from_log() {
@@ -1056,6 +1093,13 @@ worker_fallback_steps() {
 EOF
 }
 
+sync_state_info() {
+  # Prints "<last_run epoch>|<last_error>" from the sync state file, or
+  # fails when no sync has run yet. Used by the health check and status.
+  [ -f "${DIR}/sync-state.json" ] || return 1
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(f\"{d.get('last_run','')}|{d.get('last_error') or ''}\")" "${DIR}/sync-state.json" 2>/dev/null
+}
+
 run_checks() {
   echo "----- checks -----"
   if systemctl is-active --quiet sui-panel; then echo "PASS panel service active"; else echo "FAIL panel service not active"; fi
@@ -1079,6 +1123,38 @@ run_checks() {
   else
     echo "SKIP worker check (not deployed)"
   fi
+  # End-to-end: the subscription itself must come back from the worker
+  # (KV + worker + the client's key in one call), and the panel must
+  # answer through its own tunnel — a local 200 on 127.0.0.1 is not
+  # proof that the public path works.
+  if [ -n "${WORKER_URL:-}" ] && [ -n "${CLIENT_UUID:-}" ]; then
+    local sub_url="${WORKER_URL}/sub/"
+    [ -n "${SUB_SECRET:-}" ] && sub_url="${sub_url}${SUB_SECRET}/"
+    sub_url="${sub_url}${CLIENT_UUID}"
+    code=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "${sub_url}" 2>/dev/null || echo 000)
+    if [ "${code}" = "200" ]; then echo "PASS worker /sub serves this client (HTTP 200)"; else echo "FAIL worker /sub (HTTP ${code}): subscription not served"; fi
+  fi
+  u=$(panel_tunnel_url)
+  if [ -n "${u}" ]; then
+    code=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "${u}${PANEL_BASE_PATH}login" 2>/dev/null || echo 000)
+    if [ "${code}" = "200" ]; then echo "PASS panel login page via tunnel (HTTP 200)"; else echo "FAIL panel via tunnel (HTTP ${code})"; fi
+  fi
+  # Last sync run: when it ran, and whether it failed.
+  local lr_le lr le now age
+  if lr_le=$(sync_state_info); then
+    lr="${lr_le%%|*}"; le="${lr_le#*|}"
+    now=$(date +%s)
+    if [ -n "${le}" ]; then
+      echo "FAIL last sync error: ${le}"
+    elif [ -n "${lr}" ]; then
+      age=$((now - lr))
+      if [ "${age}" -gt 600 ]; then echo "FAIL last sync stale: ${age}s ago (timer/sync stuck?)"; else echo "PASS last sync ${age}s ago"; fi
+    else
+      echo "SKIP last sync state (no run recorded yet)"
+    fi
+  else
+    echo "SKIP last sync state (no sync has run yet)"
+  fi
   echo "------------------"
 }
 
@@ -1092,6 +1168,8 @@ cmd_install() {
   fi
   preflight
   mkdir -p "${DIR}" "${BIN}"
+  # A re-install must never be the moment the old DB/state is lost.
+  backup_before_change
   download_binaries
   gen_state
   # Persist the (possibly re-resolved) ports so re-runs and sui_setup.py
@@ -1127,6 +1205,7 @@ cmd_install() {
     worker_fallback_steps
   fi
   systemctl enable --now sui-sync.timer >/dev/null 2>&1 || true
+  systemctl enable --now sui-sync.path >/dev/null 2>&1 || true
   python3 "${DIR}/sync.py" || echo "first sync failed (see above); timer will retry every 60s"
   load_state
   run_checks
@@ -1223,6 +1302,7 @@ cmd_status() {
   tail -15 "${PTLOG}" 2>/dev/null || echo "(no log yet)"
   echo "----- last sync -----"
   systemctl status sui-sync.service --no-pager -n 5 2>/dev/null | tail -5 || true
+  run_checks
 }
 
 cmd_panel_on() {
@@ -1253,6 +1333,9 @@ cmd_update_sui() {
   local old_ver backup
   old_ver=$("${BIN}/sui" -v 2>/dev/null | head -1 || echo "(none)")
   echo "current: ${old_ver}"
+  # The DB + state are snapshotted before the binary is touched, so a
+  # bad new version can never take the clients and secrets with it.
+  backup_before_change
   echo "fetching latest s-ui from GitHub..."
   download_sui || die "update failed; current binary untouched"
   backup="${BIN}/sui.bak-$(date +%Y%m%d-%H%M)"
@@ -1311,7 +1394,7 @@ cmd_restore() {
     echo "current ${DIR} will be replaced by the backup."
     read -r -p "Continue? [y/N] " ans
     case "${ans}" in y|Y) : ;; *) echo "aborted"; return 0 ;; esac
-    systemctl stop sui-panel sui-tunnel sui-panel-tunnel sui-sync.timer 2>/dev/null || true
+    systemctl stop sui-panel sui-tunnel sui-panel-tunnel sui-sync.timer sui-sync.path 2>/dev/null || true
   fi
   tar xzf "${file}" -C "${TARGET_HOME}" \
     || die "restore failed while extracting"
@@ -1322,6 +1405,7 @@ cmd_restore() {
     systemctl daemon-reload
     systemctl restart sui-panel sui-tunnel sui-panel-tunnel 2>/dev/null || true
     systemctl enable --now sui-sync.timer >/dev/null 2>&1 || true
+    systemctl enable --now sui-sync.path >/dev/null 2>&1 || true
     python3 "${DIR}/sync.py" || echo "sync will retry every 60s"
     echo "restored ${DIR} from ${file}; services restarted."
     echo "check: sudo bash install.sh status"
@@ -1334,11 +1418,12 @@ cmd_restore() {
 cmd_uninstall() {
   need_root uninstall
   remove_global_command
+  systemctl disable --now sui-sync.path >/dev/null 2>&1 || true
   systemctl disable --now sui-sync.timer >/dev/null 2>&1 || true
   systemctl disable --now sui-panel-tunnel >/dev/null 2>&1 || true
   systemctl disable --now sui-tunnel >/dev/null 2>&1 || true
   systemctl disable --now sui-panel >/dev/null 2>&1 || true
-  rm -f "${PANEL_UNIT}" "${TUN_UNIT}" "${PANEL_TUN_UNIT}" "${SYNC_UNIT}" "${TIMER_UNIT}"
+  rm -f "${PANEL_UNIT}" "${TUN_UNIT}" "${PANEL_TUN_UNIT}" "${SYNC_UNIT}" "${TIMER_UNIT}" "${PATH_UNIT}"
   systemctl daemon-reload
   rm -f "${PTLOG}"
   rm -rf "${DIR}"

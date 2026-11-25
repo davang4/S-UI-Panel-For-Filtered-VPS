@@ -113,3 +113,58 @@ address itself is the thing a filter rule would target.
 It contains every secret; without it, a dead VPS means new UUIDs and
 new subscription links for every client. There is no automatic backup
 — schedule the copy yourself.
+
+Before `update-sui` and before a re-install, the installer also
+snapshots the DB + state to `~/sui-vpn/backups/` (last 5 kept, mode
+600), so a bad new binary can never take the clients and secrets
+with it.
+
+## Key rotation (when something leaks)
+
+Rotation is manual — nothing rotates itself, and nothing in this
+repo ever prints a secret to a log (see the audit below). If a secret
+does leak (a screenshot, a pasted terminal, a shared backup), rotate
+it and revoke the old one:
+
+- **Cloudflare API token.** In the dashboard (My Profile → API
+  Tokens) revoke the old token, create a new one with the same
+  permissions (Workers Scripts Edit, Workers KV Storage Edit,
+  Account Settings Read), then put it in `~/sui-vpn/state.env`
+  (`CF_API_TOKEN=…`, file stays mode 600) and run
+  `sudo bash install.sh deploy-worker` + `sync-now` to confirm the
+  new token works. The old token stops working the moment it is
+  revoked — the sync fails loudly until the new one is in place.
+- **SUB_SECRET.** Generate a new one and put it in `state.env`
+  (`SUB_SECRET=…`), then run `deploy-worker` (uploads the worker
+  with the new secret) and `sync-now` (the panel's subURI is rebuilt
+  from the new secret). **Every old subscription link stops working**
+  — hand out the new links from the panel. The worker variable and
+  the panel subURI must match; if they do not, `/sub` returns 404
+  for the old links.
+- **Panel password.** Change it in the panel (Settings → panel
+  account) — or reset it with the panel's own reset flow. The
+  installer never stores it anywhere except `state.env` and the
+  s-ui DB.
+- **Client UUID (one user's link leaked).** Delete the client in the
+  panel and re-add them; the sync publishes a new UUID and deletes
+  the old key from KV. Only that user gets a new link.
+
+## Secrets audit (what is printed where)
+
+Checked against the code; the rule is: secrets are shown only in the
+terminal, on demand, never in a persistent log.
+
+- **Shown (terminal only):** the install SAVE block and `show`
+  (panel username/password, subscription URL with secret, fixed panel
+  address); `sync-now --dry-run` (full links + UUIDs, only when you
+  run it by hand).
+- **Masked in the systemd journal:** the sync timer's stdout goes to
+  the journal, so its lines print no secret values — a stamped
+  server id shows its first 8 characters, a failed KV write names
+  the client by name (not by UUID), and a panel-host change is logged
+  without the hostname (the address is in `panel-tunnel.log` and
+  `show`).
+- **Never printed:** the Cloudflare API token (read hidden at the
+  prompt, stored only in `state.env` mode 600). The worker has no
+  `console.log` at all, so nothing lands in Cloudflare's logs
+  either.
