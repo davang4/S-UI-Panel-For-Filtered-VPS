@@ -5,6 +5,21 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-25
 
+- **Version check in `update-sui`.** It compares the installed
+  s-ui version with the latest GitHub release first (or with the
+  pinned `SUI_VERSION`): when s-ui is already the latest it says so
+  and does nothing — no download, no restart, no re-install. The
+  downloaded binary's version is checked again before the swap, so
+  an unreachable GitHub API still cannot re-install the same
+  version. A major-version jump (1.x → 2.x) asks first, because a
+  new major version can reset the panel database on first start;
+  answering N leaves the current binary untouched. `update-sui`
+  itself never touches the database — a wipe after an update comes
+  from the new binary's own migration (see TROUBLESHOOTING).
+- **Menu header: fixed panel address first.** The `filtersui` menu
+  prints `Panel (fixed): …` first, then the server code — the same
+  order as `show` and the SAVE block.
+
 - **Numbered menu (`filtersui`).** `sudo filtersui` with no command
   opens a numbered menu of every command (install, show, status,
   sync-now, deploy-worker, change-subdomain, update-sui, panel-on/off,

@@ -38,6 +38,10 @@ What is covered:
   `change-subdomain` abort on N and apply on y; the menu runs a
   command by number, loops, rejects an invalid number, quits on q,
   and exits at once on EOF; the dispatch maps numbers and names to
-  commands and opens the menu with no argument.
+  commands and opens the menu with no argument; the menu header
+  prints the fixed panel address first, then the server code;
+  `update-sui` does nothing when s-ui is already the latest version
+  (or the same version after download), swaps in a newer version,
+  and asks first on a major-version jump (aborts on N, swaps on y).
 
 Add a test before changing the behaviour it covers.

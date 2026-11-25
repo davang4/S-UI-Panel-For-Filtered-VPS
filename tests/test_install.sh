@@ -199,7 +199,7 @@ else
 fi
 
 # ---- menu + global links + destructive confirms ----
-for fn in cmd_menu cmd_help install_global_command remove_global_command cmd_uninstall cmd_change_subdomain; do
+for fn in cmd_menu cmd_help install_global_command remove_global_command cmd_uninstall cmd_change_subdomain sui_version_of sui_version_major latest_sui_version cmd_update_sui; do
   extract_fn "${fn}" >> "${FN_TMP}"
 done
 # shellcheck disable=SC1090
@@ -312,6 +312,86 @@ dispatch_calls() {
 [ "$(dispatch_calls 12)" = "uninstall" ] && ok "dispatch: 12 runs uninstall" || bad "dispatch: 12"
 out=$(dispatch_calls bogus 2>&1); code=$?
 [ "${code}" = "1" ] && [ "${out}" = "help" ] && ok "dispatch: unknown arg prints help (stderr) and exits 1" || bad "dispatch: bogus (code ${code}, out ${out})"
+
+# ---- update-sui: never re-install the same version ----
+# Re-source the real functions: the menu section above stubbed cmd_*,
+# which shadows the real cmd_update_sui this section tests.
+# shellcheck disable=SC1090
+source "${FN_TMP}"
+[ "$(sui_version_of "s-ui 1.6.8")" = "1.6.8" ] && ok "version extracted from sui -v output" || bad "sui_version_of sui -v"
+[ "$(sui_version_of "v2.0.0")" = "2.0.0" ] && ok "version extracted from a v-tag" || bad "sui_version_of v-tag"
+[ -z "$(sui_version_of "no version here")" ] && ok "no version in garbage text" || bad "sui_version_of garbage"
+[ "$(sui_version_major "1.6.8")" = "1" ] && [ "$(sui_version_major "2.0.0")" = "2" ] \
+  && ok "major version split" || bad "sui_version_major"
+LATEST_VER="1.7.0"
+curl() {
+  local url="" a
+  for a in "$@"; do case "${a}" in https://*) url="${a}" ;; esac; done
+  case "${url}" in
+    *api.github.com*) printf '{"tag_name":"v%s"}' "${LATEST_VER}" ;;
+    *) printf '' ;;
+  esac
+}
+[ "$(latest_sui_version)" = "1.7.0" ] && ok "latest version from the GitHub API" || bad "latest_sui_version"
+LATEST_VER=""
+[ -z "$(latest_sui_version)" ] && ok "latest version empty when the API is silent" || bad "latest_sui_version silent"
+
+# Fake s-ui binaries + stubs for the update flow.
+UPD_BIN="${TMP}/upd-bin"; UPD_DIR="${TMP}/upd-home"
+mkdir -p "${UPD_BIN}" "${UPD_DIR}"
+BIN="${UPD_BIN}"; DIR="${UPD_DIR}"
+mk_fake_sui() { printf '#!/usr/bin/env bash\necho "s-ui %s"\n' "$1" > "${BIN}/sui"; chmod +x "${BIN}/sui"; }
+: > "${TMP}/upd_calls"
+backup_before_change() { echo "backup" >> "${TMP}/upd_calls"; }
+download_sui() {
+  printf '#!/usr/bin/env bash\necho "s-ui %s"\n' "${NEW_VER}" > "${BIN}/sui.new"
+  chmod +x "${BIN}/sui.new"
+  echo "downloaded" >> "${TMP}/upd_calls"
+  return 0
+}
+systemctl() { echo "systemctl $*" >> "${TMP}/upd_calls"; }
+SUI_VERSION=""
+mk_fake_sui "1.6.8"
+LATEST_VER="1.6.8"
+out=$(cmd_update_sui </dev/null 2>&1); code=$?
+check "update-sui: already latest does nothing" "${out}" "already the latest version"
+check_not "update-sui: already latest downloads nothing" "$(cat "${TMP}/upd_calls")" "downloaded"
+check_not "update-sui: already latest restarts nothing" "$(cat "${TMP}/upd_calls")" "systemctl"
+: > "${TMP}/upd_calls"
+LATEST_VER="1.7.0"; NEW_VER="1.7.0"
+out=$(cmd_update_sui </dev/null 2>&1); code=$?
+check "update-sui: newer version swaps in" "${out}" "new: s-ui 1.7.0"
+check "update-sui: newer version restarts the panel" "$(cat "${TMP}/upd_calls")" "systemctl restart sui-panel"
+[ "$(sui_version_of "$("${BIN}/sui" -v)")" = "1.7.0" ] && ok "update-sui: binary replaced" || bad "update-sui: binary not replaced"
+: > "${TMP}/upd_calls"
+mk_fake_sui "1.6.8"
+LATEST_VER=""
+NEW_VER="1.6.8"
+out=$(cmd_update_sui </dev/null 2>&1); code=$?
+check "update-sui: same version after download does nothing" "${out}" "same as installed"
+[ ! -f "${BIN}/sui.new" ] && ok "update-sui: same-version download discarded" || bad "update-sui: sui.new left behind"
+check_not "update-sui: same version restarts nothing" "$(cat "${TMP}/upd_calls")" "systemctl"
+: > "${TMP}/upd_calls"
+mk_fake_sui "1.6.8"
+LATEST_VER="2.0.0"; NEW_VER="2.0.0"
+out=$(printf 'n\n' | cmd_update_sui 2>&1); code=$?
+check "update-sui: major jump warns" "${out}" "major-version jump"
+check "update-sui: major jump aborts on N" "${out}" "aborted"
+[ "$(sui_version_of "$("${BIN}/sui" -v)")" = "1.6.8" ] && ok "update-sui: major jump on N keeps the old binary" || bad "update-sui: major jump on N swapped"
+: > "${TMP}/upd_calls"
+out=$(printf 'y\n' | cmd_update_sui 2>&1); code=$?
+[ "$(sui_version_of "$("${BIN}/sui" -v)")" = "2.0.0" ] && ok "update-sui: major jump on y swaps" || bad "update-sui: major jump on y did not swap"
+
+# ---- menu header: fixed panel address first, then server code ----
+MENU_STATE="${TMP}/menu-state.env"
+printf 'WORKER_URL=https://sui-sub-3.test.workers.dev\nPANEL_BASE_PATH=/app-xyz/\nSERVER_CODE=5c0b21ef\nCLIENT_UUID=5c0b21ef-178a-4b3e-b0f3-4a813e7073ee\n' > "${MENU_STATE}"
+STATE="${MENU_STATE}"
+out=$(printf 'q\n' | cmd_menu 2>&1)
+if [[ "${out}" == *"Panel (fixed): https://sui-sub-3.test.workers.dev/app-xyz/"*"server code: 5c0b21ef"* ]]; then
+  ok "menu header: fixed panel address first, then server code"
+else
+  bad "menu header order (got: ${out})"
+fi
 
 echo "---"
 echo "install tests: ${PASS} passed, ${FAIL} failed"

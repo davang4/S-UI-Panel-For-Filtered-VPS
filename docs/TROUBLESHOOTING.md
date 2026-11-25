@@ -160,6 +160,39 @@ It prints `found this server's existing Worker + KV on Cloudflare
   Give this server its own names and re-run, as the message says.
   Never force two servers onto one Worker + KV.
 
+## `update-sui` wiped the users / settings
+
+`update-sui` itself never touches the s-ui database — it only swaps
+the binary and restarts the panel. A wipe after an update means the
+new binary started on the old database and its own migration reset
+it (a major-version jump is the risky case). The installer now
+checks the version first and does nothing when s-ui is already the
+latest, and asks before any major-version jump.
+
+Recover on the affected server (diagnose first, restore second):
+
+```bash
+sudo -i
+cd ~/sui-vpn
+./bin/sui -v | head -1
+ls -la bin/sui.bak-* backups/ 2>/dev/null
+ls -la db/
+python3 -c "import sqlite3; c=sqlite3.connect('db/s-ui.db'); print('clients:', c.execute('SELECT COUNT(*) FROM clients').fetchone()[0]); print('inbounds:', c.execute('SELECT COUNT(*) FROM inbounds').fetchone()[0])"
+```
+
+- If `db/` holds another database file next to `s-ui.db`, the new
+  binary created a fresh one there and the old data is still in
+  `s-ui.db` — put the old binary back (`sudo cp bin/sui.bak-<stamp>
+  bin/sui && sudo systemctl restart sui-panel`).
+- If a `backups/pre-change-*.tar.gz` from just before the update
+  exists, its database has the users: stop the panel, extract the
+  backup's `db/s-ui.db` over `~/sui-vpn/db/s-ui.db`, put the old
+  binary back, restart the panel, and count the clients again.
+- If there is no backup and the database file itself is empty, the
+  clients are still listed in Cloudflare KV (`sub:<name>` keys hold
+  every client UUID) — recreate them in the panel from those keys.
+  Do not re-run `update-sui` until the panel shows the users again.
+
 ## `status` shows FAIL on the last sync
 
 - **`last sync error: …`** — the sync's own error message, e.g. a KV

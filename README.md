@@ -153,7 +153,7 @@ reversible.
 | `sync-now --force` | Rewrite everything to KV even if nothing changed locally (use after a Worker/KV move, or when another server overwrote this server's `panel:host`). |
 | `deploy-worker` | Re-upload `worker.js` to Cloudflare after editing it. Reuses this server's Worker + KV (by server code); if `state.env` lost its names, it finds and adopts the server's existing Worker + KV instead of creating new ones. |
 | `change-subdomain [name]` | Replace the account's workers.dev subdomain with a custom one (it changes the fixed address of every worker on the account; re-run `deploy-worker` on each other server afterwards). |
-| `update-sui` | Replace s-ui with the newest GitHub release. Verifies the new binary runs first and keeps a timestamped backup of the old one — and snapshots the s-ui DB + state first (`~/sui-vpn/backups/`, last 5 kept). |
+| `update-sui` | Replace s-ui with the newest GitHub release. Checks the version first — if s-ui is already the latest, it says so and does nothing (no download, no restart). A major-version jump (1.x → 2.x) asks first, because a new major version can reset the panel database on first start. Verifies the new binary runs first and keeps a timestamped backup of the old one — and snapshots the s-ui DB + state first (`~/sui-vpn/backups/`, last 5 kept). |
 | `panel-on` / `panel-off` | Allow / stop panel access from the internet. Off means the panel is reachable only via SSH forward. |
 | `backup` | Tarball of `~/sui-vpn` (mode 600). Contains every secret — copy it off the server. |
 | `restore <file>` | Restore `~/sui-vpn` from a backup tarball and restart the services. On a fresh server, run `install` afterwards (it keeps the restored state). |

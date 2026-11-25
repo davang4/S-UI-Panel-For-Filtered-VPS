@@ -1503,17 +1503,70 @@ cmd_panel_off() {
   echo "Turn it back on with: sudo bash install.sh panel-on"
 }
 
+sui_version_of() {
+  # sui_version_of TEXT — print the first X.Y.Z (or X.Y) version number
+  # in the text, or nothing. `sui -v` and GitHub tags print it in
+  # different shapes ("s-ui 1.6.8", "v1.6.8"), so normalise here.
+  printf '%s' "$1" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
+}
+
+sui_version_major() {
+  # sui_version_major X.Y.Z — print the major version number.
+  printf '%s' "${1%%.*}"
+}
+
+latest_sui_version() {
+  # latest_sui_version — print the latest s-ui release version from
+  # GitHub (e.g. 1.7.0), or nothing when the API cannot be reached.
+  curl -fsSL --max-time 15 "https://api.github.com/repos/alireza0/s-ui/releases/latest" 2>/dev/null \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name','').lstrip('v'))" 2>/dev/null \
+    | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1
+}
+
 cmd_update_sui() {
   need_root update-sui
   load_state
-  local old_ver backup
-  old_ver=$("${BIN}/sui" -v 2>/dev/null | head -1 || echo "(none)")
-  echo "current: ${old_ver}"
+  local old_ver new_ver target backup ans
+  old_ver=$(sui_version_of "$("${BIN}/sui" -v 2>/dev/null | head -1)")
+  echo "current: ${old_ver:-unknown}"
+  # Never re-install the same version: check first, download nothing,
+  # restart nothing when already up to date.
+  if [ -n "${SUI_VERSION:-}" ]; then
+    target="${SUI_VERSION}"
+    if [ "${old_ver}" = "${target}" ]; then
+      echo "s-ui is already at version ${target} (pinned); nothing to do."
+      return 0
+    fi
+  else
+    target=$(latest_sui_version)
+    if [ -n "${target}" ] && [ "${old_ver}" = "${target}" ]; then
+      echo "s-ui is already the latest version (${target}); nothing to do."
+      return 0
+    fi
+    [ -n "${target}" ] && echo "latest: ${target}"
+  fi
   # The DB + state are snapshotted before the binary is touched, so a
   # bad new version can never take the clients and secrets with it.
   backup_before_change
-  echo "fetching latest s-ui from GitHub..."
+  echo "fetching s-ui ${target:+${target} }from GitHub..."
   download_sui || die "update failed; current binary untouched"
+  new_ver=$(sui_version_of "$("${BIN}/sui.new" -v 2>/dev/null | head -1)")
+  if [ -n "${new_ver}" ] && [ "${new_ver}" = "${old_ver}" ]; then
+    rm -f "${BIN}/sui.new"
+    echo "downloaded s-ui ${new_ver} is the same as installed; nothing to do."
+    return 0
+  fi
+  # A major-version jump (1.x -> 2.x) can reset the panel database in
+  # the new binary's migration, so it always asks first — unless the
+  # version was pinned explicitly (then the operator chose it).
+  if [ -z "${SUI_VERSION:-}" ] && [ -n "${new_ver}" ] && [ -n "${old_ver}" ] \
+     && [ "$(sui_version_major "${new_ver}")" != "$(sui_version_major "${old_ver}")" ]; then
+    echo "WARNING: this is a major-version jump (${old_ver} -> ${new_ver})."
+    echo "A new major version can reset the panel database on first start."
+    echo "The DB + state were snapshotted to ${DIR}/backups/ first."
+    read -r -p "Update to ${new_ver} anyway? [y/N] " ans
+    case "${ans}" in y|Y) : ;; *) rm -f "${BIN}/sui.new"; echo "aborted; current binary untouched"; return 0 ;; esac
+  fi
   backup="${BIN}/sui.bak-$(date +%Y%m%d-%H%M)"
   if [ -x "${BIN}/sui" ]; then
     cp "${BIN}/sui" "${backup}" && echo "backup of old binary: ${backup}"
@@ -1626,7 +1679,14 @@ cmd_menu() {
   local choice file
   if [ -f "${STATE}" ]; then
     . "${STATE}" 2>/dev/null
-    echo "server code: ${SERVER_CODE:-$(server_code)}${WORKER_URL:+  |  worker: ${WORKER_URL}}"
+    # The fixed panel address comes first, then the server code —
+    # the same order as show and the SAVE block.
+    if [ -n "${WORKER_URL:-}" ]; then
+      echo "Panel (fixed): ${WORKER_URL}${PANEL_BASE_PATH:-/app/}"
+    else
+      echo "Panel (fixed): worker not deployed yet"
+    fi
+    echo "server code: ${SERVER_CODE:-$(server_code)}"
   else
     echo "not installed yet — pick 1 to install."
   fi
