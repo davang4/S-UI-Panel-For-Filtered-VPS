@@ -33,6 +33,11 @@ What is covered:
   `server:code`); `worker_own_namespace` adopts our own worker and
   refuses another server's; the namespace-owner guard allows ours
   and stops on another server's; the SUB_SECRET is recovered from
-  the panel's subURI.
+  the panel's subURI; both global links (`sui-vpn`, `filtersui`)
+  point at install.sh and are removed together; `uninstall` and
+  `change-subdomain` abort on N and apply on y; the menu runs a
+  command by number, loops, rejects an invalid number, quits on q,
+  and exits at once on EOF; the dispatch maps numbers and names to
+  commands and opens the menu with no argument.
 
 Add a test before changing the behaviour it covers.

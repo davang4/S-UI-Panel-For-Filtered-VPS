@@ -114,20 +114,37 @@ tmux, where hidden `read` can fail), export `CF_API_TOKEN` and
 ## Management
 
 After install, every command also works from any directory — no `cd`
-needed:
+needed. `sudo filtersui` with no command opens a numbered menu (the
+server code is shown at the top, so you know which server you are
+on); pick a number — no need to type the command name — and the menu
+comes back after each action until you pick 0. A number also works as
+a direct argument (`sudo filtersui 3` runs `status`), and the direct
+commands work too:
 
 ```bash
+sudo filtersui          # numbered menu
+sudo filtersui status   # or: sudo sui-vpn status
 sudo sui-vpn show
-sudo sui-vpn status
 ```
 
 `sudo bash install.sh help` (in the install directory) prints the
-same list.
+same list. Running with no command used to start a full install —
+now it opens the menu; install explicitly with `install` (the
+one-command install above already does).
+
+Destructive actions always ask first, in the menu and on the command
+line: `uninstall` (removes the panel, tunnels and `~/sui-vpn`),
+`change-subdomain` (changes the fixed address of every worker on the
+account), and `restore` (replaces `~/sui-vpn` with the backup).
+`update-sui` and a re-run of `install` do not ask — they snapshot the
+DB + state first (`~/sui-vpn/backups/`, last 5 kept), so they are
+reversible.
 
 ### Command reference
 
 | Command | What it does |
 |---|---|
+| `menu` | Numbered menu (the default when no command is given). |
 | `install` | Full install (panel + tunnels + Worker + sync timer). Re-running it is safe: it keeps existing state and only fills in what is missing, and snapshots the DB + state first. |
 | `show` | Panel URL, current tunnel URL, fixed subscription URL, panel login. |
 | `status` | Service states, tunnel URLs, last tunnel log lines, last sync run, and the real health check: worker `/health` + `/sub`, panel through its tunnel, last sync state. Start here when something is wrong. |
@@ -140,7 +157,7 @@ same list.
 | `panel-on` / `panel-off` | Allow / stop panel access from the internet. Off means the panel is reachable only via SSH forward. |
 | `backup` | Tarball of `~/sui-vpn` (mode 600). Contains every secret — copy it off the server. |
 | `restore <file>` | Restore `~/sui-vpn` from a backup tarball and restart the services. On a fresh server, run `install` afterwards (it keeps the restored state). |
-| `uninstall` | Remove the install from the server (below). |
+| `uninstall` | Remove the install from the server (below). Asks first. |
 | `help` | Show the command list. |
 
 ### Users

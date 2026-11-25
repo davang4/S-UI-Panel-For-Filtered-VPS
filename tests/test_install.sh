@@ -198,6 +198,121 @@ else
   check "guard names the other server" "$(cat /tmp/guard_out.txt)" "already belongs to another server"
 fi
 
+# ---- menu + global links + destructive confirms ----
+for fn in cmd_menu cmd_help install_global_command remove_global_command cmd_uninstall cmd_change_subdomain; do
+  extract_fn "${fn}" >> "${FN_TMP}"
+done
+# shellcheck disable=SC1090
+source "${FN_TMP}"
+
+# Global links: both sui-vpn and filtersui point at ~/sui-vpn/install.sh.
+BUNDLE_DIR="${TMP}/bundle"
+mkdir -p "${BUNDLE_DIR}" "${TMP}/bin"
+printf '#!/usr/bin/env bash\n' > "${BUNDLE_DIR}/install.sh"
+DIR="${TMP}/home2"
+mkdir -p "${DIR}"
+GLOBAL_LINK="${TMP}/bin/sui-vpn"
+FILTERSUI_LINK="${TMP}/bin/filtersui"
+install_global_command >/dev/null
+if [ -L "${GLOBAL_LINK}" ] && [ -L "${FILTERSUI_LINK}" ] \
+   && [ "$(readlink "${GLOBAL_LINK}")" = "${DIR}/install.sh" ] \
+   && [ "$(readlink "${FILTERSUI_LINK}")" = "${DIR}/install.sh" ]; then
+  ok "global links: sui-vpn and filtersui both point at install.sh"
+else
+  bad "global links"
+fi
+remove_global_command
+[ ! -e "${GLOBAL_LINK}" ] && [ ! -e "${FILTERSUI_LINK}" ] \
+  && ok "remove_global_command removes both links" \
+  || bad "remove_global_command"
+
+# Uninstall asks first.
+need_root() { :; }
+systemctl() { echo "systemctl $*" >> "${TMP}/systemctl_calls"; }
+remove_global_command() { echo "removed" >> "${TMP}/rgc_calls"; }
+UN_DIR="${TMP}/uninstall-home"
+mkdir -p "${UN_DIR}"
+DIR="${UN_DIR}"
+PANEL_UNIT="${TMP}/u1"; TUN_UNIT="${TMP}/u2"; PANEL_TUN_UNIT="${TMP}/u3"
+SYNC_UNIT="${TMP}/u4"; TIMER_UNIT="${TMP}/u5"; PATH_UNIT="${TMP}/u6"
+PTLOG="${TMP}/u7"
+out=$(printf 'n\n' | cmd_uninstall 2>&1)
+check "uninstall aborts on N" "${out}" "aborted"
+[ -d "${UN_DIR}" ] && ok "uninstall on N leaves the dir" || bad "uninstall on N removed the dir"
+out=$(printf 'y\n' | cmd_uninstall 2>&1)
+[ ! -d "${UN_DIR}" ] && ok "uninstall on y removes the dir" || bad "uninstall on y kept the dir"
+
+# change-subdomain asks first (account-wide, changes every address).
+load_state() { :; }
+set_state() { :; }
+valid_subdomain() { return 0; }
+random_name() { echo "w1234567890"; }
+current_subdomain() { echo "oldsub"; }
+put_subdomain() { echo "$1" >> "${TMP}/put_calls"; return 0; }
+set_panel_suburi() { :; }
+CF_API_TOKEN="tok"; CF_ACCOUNT_ID="acct"; WORKER_NAME="sui-sub-3"
+: > "${TMP}/put_calls"
+printf 'n\n' | cmd_change_subdomain newsub >/dev/null 2>&1
+[ ! -s "${TMP}/put_calls" ] && ok "change-subdomain aborts on N" || bad "change-subdomain on N still applied"
+printf 'y\n' | cmd_change_subdomain newsub >/dev/null 2>&1
+check "change-subdomain applies on y" "$(cat "${TMP}/put_calls")" "newsub"
+
+# The menu: numbers (not names) drive it; it loops; EOF exits at once.
+id() { echo 0; }
+cmd_install() { echo "CALLED:install"; }
+cmd_show() { echo "CALLED:show"; }
+cmd_status() { echo "CALLED:status"; }
+cmd_sync_now() { echo "CALLED:sync-now"; }
+cmd_deploy_worker() { echo "CALLED:deploy-worker"; }
+cmd_change_subdomain() { echo "CALLED:change-subdomain"; }
+cmd_update_sui() { echo "CALLED:update-sui"; }
+cmd_panel_on() { echo "CALLED:panel-on"; }
+cmd_panel_off() { echo "CALLED:panel-off"; }
+cmd_backup() { echo "CALLED:backup"; }
+cmd_restore() { echo "CALLED:restore:$1"; }
+cmd_uninstall() { echo "CALLED:uninstall"; }
+STATE="${TMP}/no-such-state.env"
+out=$(printf '3\n0\n' | cmd_menu 2>&1); code=$?
+check "menu runs status by number" "${out}" "CALLED:status"
+[ "${code}" = "0" ] && ok "menu exits 0 on 0" || bad "menu exit on 0 (got ${code})"
+out=$(printf '99\n0\n' | cmd_menu 2>&1)
+check "menu rejects an invalid number" "${out}" "invalid choice"
+out=$(printf 'q\n' | cmd_menu 2>&1)
+check_not "menu quits on q without running anything" "${out}" "CALLED:"
+out=$(printf '11\n/tmp/x.tar.gz\n0\n' | cmd_menu 2>&1)
+check "menu asks for the backup file on restore" "${out}" "CALLED:restore:/tmp/x.tar.gz"
+out=$(cmd_menu </dev/null 2>&1); code=$?
+[ "${code}" = "0" ] && ok "menu exits at once on EOF" || bad "menu on EOF (got ${code})"
+
+# Dispatch: numbers and names map to commands; no arg opens the menu.
+dispatch_calls() {
+  (
+    cmd_menu() { echo "menu"; }
+    cmd_install() { echo "install"; }
+    cmd_show() { echo "show"; }
+    cmd_status() { echo "status"; }
+    cmd_sync_now() { echo "sync-now:$*"; }
+    cmd_deploy_worker() { echo "deploy-worker"; }
+    cmd_change_subdomain() { echo "change-subdomain:$*"; }
+    cmd_update_sui() { echo "update-sui"; }
+    cmd_panel_on() { echo "panel-on"; }
+    cmd_panel_off() { echo "panel-off"; }
+    cmd_backup() { echo "backup"; }
+    cmd_restore() { echo "restore:$*"; }
+    cmd_uninstall() { echo "uninstall"; }
+    cmd_help() { echo "help"; }
+    set -- "$@"
+    eval "$(sed -n '/^case "\${1:-menu}" in$/,$p' "${REPO}/install.sh")"
+  )
+}
+[ "$(dispatch_calls)" = "menu" ] && ok "dispatch: no arg opens the menu" || bad "dispatch: no arg"
+[ "$(dispatch_calls 3)" = "status" ] && ok "dispatch: 3 runs status" || bad "dispatch: 3"
+[ "$(dispatch_calls status)" = "status" ] && ok "dispatch: status by name" || bad "dispatch: status by name"
+[ "$(dispatch_calls 4 --dry-run)" = "sync-now:--dry-run" ] && ok "dispatch: 4 passes args to sync-now" || bad "dispatch: 4 --dry-run"
+[ "$(dispatch_calls 12)" = "uninstall" ] && ok "dispatch: 12 runs uninstall" || bad "dispatch: 12"
+out=$(dispatch_calls bogus 2>&1); code=$?
+[ "${code}" = "1" ] && [ "${out}" = "help" ] && ok "dispatch: unknown arg prints help (stderr) and exits 1" || bad "dispatch: bogus (code ${code}, out ${out})"
+
 echo "---"
 echo "install tests: ${PASS} passed, ${FAIL} failed"
 [ "${FAIL}" = "0" ]

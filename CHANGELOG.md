@@ -5,6 +5,20 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-25
 
+- **Numbered menu (`filtersui`).** `sudo filtersui` with no command
+  opens a numbered menu of every command (install, show, status,
+  sync-now, deploy-worker, change-subdomain, update-sui, panel-on/off,
+  backup, restore, uninstall) — pick a number, no need to type the
+  command name; the menu comes back after each action until 0/q, and
+  a number also works as a direct argument (`sudo filtersui 3` runs
+  `status`). The menu shows the server code at the top, requires
+  root, and exits at once on stdin EOF. `sudo sui-vpn <command>`
+  still works from any directory; `filtersui` is a second link to the
+  same script. Running with no command used to start a full install —
+  now it opens the menu (install explicitly with `install`). The
+  destructive actions always ask first, in the menu and on the
+  command line: `uninstall`, `change-subdomain` (account-wide) and
+  `restore` already did.
 - **Server code: every server's Cloudflare identity.** Each server
   now has one short unique code — the first 8 characters of its
   identity UUID (`SERVER_CODE` in state.env, shown by `show` and in

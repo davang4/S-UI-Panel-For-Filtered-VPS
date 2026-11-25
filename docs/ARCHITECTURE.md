@@ -93,6 +93,29 @@ Two more mechanisms keep the sync honest:
   the panel host is not repeated, and a failed KV write names the
   client by name, not by UUID.
 
+### The menu (`filtersui`) and command dispatch
+
+Two names in PATH point at the same script: `sui-vpn` (the classic
+`sudo sui-vpn <command>`) and `filtersui` (the menu). Both are
+symlinks to `~/sui-vpn/install.sh`, created by `install` and removed
+by `uninstall`. The dispatch at the bottom of install.sh maps names
+*and* numbers to commands (`3` = `status`), and with no argument it
+opens the numbered menu (`cmd_menu`) instead of installing — the
+one-command install always passes `install` explicitly, so nothing
+there changes. The menu prints the server code at the top (so you
+know which server you are on), loops after each action until 0/q,
+accepts a command name as well as a number, and exits at once on
+stdin EOF, so it never hangs in a script or on `/dev/null`. It
+requires root (the commands it offers do); direct commands keep
+their own checks (`show`/`status` work without sudo).
+
+Destructive actions always confirm first, in the menu and on the
+command line — `uninstall` (removes the panel, tunnels and
+`~/sui-vpn`), `change-subdomain` (changes the fixed address of every
+worker on the account), `restore` (replaces `~/sui-vpn`). `update-sui`
+and a re-run of `install` do not ask: they snapshot the DB + state
+first (`backup_before_change`, last 5 kept), so they are reversible.
+
 ### Server identity (the server code)
 
 Every server has one short unique code: the first 8 hex characters of

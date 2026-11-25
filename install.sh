@@ -49,6 +49,7 @@ KV_TITLE="${KV_TITLE_REQ:-sui-sub}"
 # Global command: after install, `sudo sui-vpn <command>` works from any
 # directory (no cd). Overridable for tests: SUI_VPN_LINK.
 GLOBAL_LINK="${SUI_VPN_LINK:-/usr/local/bin/sui-vpn}"
+FILTERSUI_LINK="${SUI_FILTERSUI_LINK:-/usr/local/bin/filtersui}"
 # One-click token creation: opens the dashboard with the exact permissions
 # this installer needs already ticked (Workers Scripts Edit, Workers KV
 # Storage Edit, Account Settings Read, all accounts, all zones) — the
@@ -945,19 +946,21 @@ guard_namespace_owner() {
 
 install_global_command() {
   # Copy the installer next to the state (so it survives the bundle dir
-  # being deleted) and link it into PATH: `sudo sui-vpn <command>`
-  # works from any directory afterwards.
+  # being deleted) and link it into PATH twice: `sudo sui-vpn <command>`
+  # and `sudo filtersui` (the numbered menu) both work from any
+  # directory afterwards, with no cd.
   if [ "${BUNDLE_DIR}" != "${DIR}" ]; then
     cp "${BUNDLE_DIR}/install.sh" "${DIR}/install.sh" || return 1
   fi
   chmod +x "${DIR}/install.sh" || return 1
   ln -sf "${DIR}/install.sh" "${GLOBAL_LINK}" || return 1
-  echo "global command installed: sudo sui-vpn <command> (works from any directory)"
+  ln -sf "${DIR}/install.sh" "${FILTERSUI_LINK}" || return 1
+  echo "global commands installed: sudo sui-vpn <command> and sudo filtersui (menu)"
   return 0
 }
 
 remove_global_command() {
-  rm -f "${GLOBAL_LINK}"
+  rm -f "${GLOBAL_LINK}" "${FILTERSUI_LINK}"
 }
 
 deploy_worker() {
@@ -1232,6 +1235,12 @@ cmd_change_subdomain() {
     echo "already '${new_name}'; nothing to change."
     return 0
   fi
+  # Account-wide and irreversible for the old address: always ask
+  # first, in the menu and on the command line.
+  echo "Change the workers.dev subdomain from '${current}' to '${new_name}'?"
+  echo "This changes the fixed address of EVERY worker on this account."
+  read -r -p "Continue? [y/N] " ans
+  case "${ans}" in y|Y) : ;; *) echo "aborted"; return 0 ;; esac
   resp=$(put_subdomain "${new_name}") || { echo "Cloudflare did not accept '${new_name}': ${resp}"; return 1; }
   echo "workers.dev subdomain changed: ${current} -> ${new_name}"
   SUBDOMAIN="${new_name}"
@@ -1584,6 +1593,11 @@ cmd_restore() {
 
 cmd_uninstall() {
   need_root uninstall
+  # Destructive: always ask first, in the menu and on the command line.
+  echo "This removes the s-ui panel, tunnels, sync timer and ${DIR}."
+  echo "The Cloudflare Worker + KV namespace are NOT deleted."
+  read -r -p "Uninstall? [y/N] " ans
+  case "${ans}" in y|Y) : ;; *) echo "aborted"; return 0 ;; esac
   remove_global_command
   systemctl disable --now sui-sync.path >/dev/null 2>&1 || true
   systemctl disable --now sui-sync.timer >/dev/null 2>&1 || true
@@ -1599,10 +1613,71 @@ cmd_uninstall() {
   echo "remove them in the dashboard if wanted (see README: Uninstall)."
 }
 
+cmd_menu() {
+  # Numbered menu — the default when run with no command, and the
+  # `filtersui` entry point. Pick a number (no need to type the command
+  # name); the menu comes back after each action until 0/q. A number
+  # also works as a direct argument: `sudo filtersui 3` runs status.
+  # stdin at EOF (a script, /dev/null) exits at once, so it never hangs.
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "run as root: sudo filtersui"
+    return 1
+  fi
+  local choice file
+  if [ -f "${STATE}" ]; then
+    . "${STATE}" 2>/dev/null
+    echo "server code: ${SERVER_CODE:-$(server_code)}${WORKER_URL:+  |  worker: ${WORKER_URL}}"
+  else
+    echo "not installed yet — pick 1 to install."
+  fi
+  while :; do
+    echo ""
+    echo "S-UI Panel — filtersui"
+    echo " 1) install           نصب کامل (پنل + تونل + ورکر + سینک)"
+    echo " 2) show              آدرس پنل و لینک سابکریپشن"
+    echo " 3) status            وضعیت سرویس‌ها و آخرین سینک"
+    echo " 4) sync-now          سینک فوری کلاینت‌ها به ورکر"
+    echo " 5) deploy-worker     آپلود دوباره worker.js به کلادفلر"
+    echo " 6) change-subdomain  عوض کردن ساب‌دامین workers.dev"
+    echo " 7) update-sui        به‌روزرسانی s-ui به جدیدترین نسخه"
+    echo " 8) panel-on          باز کردن پنل از اینترنت"
+    echo " 9) panel-off         بستن پنل (فقط SSH)"
+    echo "10) backup            بکاپ گرفتن از ~/sui-vpn"
+    echo "11) restore           برگرداندن بکاپ"
+    echo "12) uninstall         حذف نصب (اول تایید می‌گیره)"
+    echo " 0) exit"
+    printf 'choice: '
+    read -r choice || { echo ""; return 0; }
+    case "${choice}" in
+      0|q|Q|quit|exit) return 0 ;;
+      1|install) cmd_install ;;
+      2|show) cmd_show ;;
+      3|status) cmd_status ;;
+      4|sync-now) cmd_sync_now ;;
+      5|deploy-worker) cmd_deploy_worker ;;
+      6|change-subdomain) cmd_change_subdomain ;;
+      7|update-sui) cmd_update_sui ;;
+      8|panel-on) cmd_panel_on ;;
+      9|panel-off) cmd_panel_off ;;
+      10|backup) cmd_backup ;;
+      11|restore)
+        printf 'backup file: '
+        read -r file || { echo ""; return 0; }
+        [ -n "${file}" ] && cmd_restore "${file}" ;;
+      12|uninstall) cmd_uninstall ;;
+      help) cmd_help ;;
+      *) echo "invalid choice: '${choice}' — pick a number 0-12." ;;
+    esac
+  done
+}
+
 cmd_help() {
   cat <<'EOF'
 usage: bash install.sh <command>
-       (after install, from any directory: sudo sui-vpn <command>)
+       (after install, from any directory: sudo filtersui [<command>])
+       (or: sudo sui-vpn <command>)
+       (no command opens the numbered menu; a number works too: filtersui 3)
+  menu           numbered menu (default when no command is given)
   install        full install (panel + tunnels + worker + sync timer)
   show           panel URL, tunnel URL, fixed subscription URL
   status         service states + tunnel logs + last sync
@@ -1619,19 +1694,20 @@ usage: bash install.sh <command>
 EOF
 }
 
-case "${1:-install}" in
-  install) cmd_install ;;
-  show) cmd_show ;;
-  status) cmd_status ;;
-  sync-now) shift; cmd_sync_now "$@" ;;
-  deploy-worker) cmd_deploy_worker ;;
-  change-subdomain) shift; cmd_change_subdomain "$@" ;;
-  update-sui) cmd_update_sui ;;
-  panel-on) cmd_panel_on ;;
-  panel-off) cmd_panel_off ;;
-  backup) cmd_backup ;;
-  restore) shift; cmd_restore "$@" ;;
-  uninstall) cmd_uninstall ;;
+case "${1:-menu}" in
+  menu) cmd_menu ;;
+  1|install) cmd_install ;;
+  2|show) cmd_show ;;
+  3|status) cmd_status ;;
+  4|sync-now) shift; cmd_sync_now "$@" ;;
+  5|deploy-worker) cmd_deploy_worker ;;
+  6|change-subdomain) shift; cmd_change_subdomain "$@" ;;
+  7|update-sui) cmd_update_sui ;;
+  8|panel-on) cmd_panel_on ;;
+  9|panel-off) cmd_panel_off ;;
+  10|backup) cmd_backup ;;
+  11|restore) shift; cmd_restore "$@" ;;
+  12|uninstall) cmd_uninstall ;;
   help) cmd_help ;;
   *) cmd_help >&2; exit 1 ;;
 esac
