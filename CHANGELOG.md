@@ -5,6 +5,31 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-25
 
+- **filtersui version + banner + `version` command.** The installer
+  has its own version now (`FILTERSUI_VERSION="1.0.0"`, semver: PATCH
+  for fixes, MINOR for features, MAJOR for breaking changes).
+  `sudo filtersui version` prints it together with the s-ui and
+  cloudflared versions. The menu opens with a banner — a filter
+  funnel drawn with lines over the boxed name + version (the box
+  width follows the version, so it stays aligned); `show`, `status`
+  and the SAVE block end with the one-line banner. The menu's item
+  descriptions are now in English.
+- **Progress bar for backup and restore.** On a terminal, both show
+  `backup: [##########----------] 50%` on one line, driven by GNU
+  tar `--checkpoint` calling `tar-progress.sh` (shipped to
+  `~/sui-vpn/` by install); ~50 updates per run, no extra dependency.
+  Off the terminal (or without GNU tar / the helper script) plain
+  `tar` runs instead, so nothing breaks. The tar operation uses the
+  dashed form (`-czf`/`-xzf`): with long options before it, GNU tar
+  only accepts the dashed form as the operation.
+- **Restore lists backups; backup says where it went.** `restore`
+  with no file lists the backups on this server (auto pre-change
+  snapshots + manual backups, newest first, with kind, date and
+  size) and restores the one picked by number; a path still works
+  for a backup copied in from outside, and with no backups at all it
+  says so. `backup` prints the file's path, its size, and the `scp`
+  command to download it (SFTP as the fallback).
+
 - **Version check in `update-sui`.** It compares the installed
   s-ui version with the latest GitHub release first (or with the
   pinned `SUI_VERSION`): when s-ui is already the latest it says so

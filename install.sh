@@ -21,6 +21,11 @@ PANEL_PORT="${PANEL_PORT:-2095}"
 SUB_PORT="${SUB_PORT:-2096}"
 IN_PORT="${IN_PORT:-10087}"
 CFD_VERSION="2026.11.2"
+# filtersui's own version (semver). Bump on every behaviour-changing
+# release: PATCH for fixes, MINOR for new features, MAJOR for breaking
+# changes. Shown by the menu banner, `show`, `status`, `help`, the
+# SAVE block, and the `version` command.
+FILTERSUI_VERSION="1.0.0"
 if [ -n "${SUI_VERSION:-}" ]; then
   SUI_URL="https://github.com/alireza0/s-ui/releases/download/v${SUI_VERSION}/s-ui-linux-amd64.tar.gz"
 else
@@ -1353,9 +1358,9 @@ cmd_install() {
   set_state IN_PORT "${IN_PORT}"
   ensure_base_path
   # ship runtime scripts next to state (sync.py / sui_setup.py read state.env beside them)
-  cp "${BUNDLE_DIR}/sync.py" "${BUNDLE_DIR}/sui_setup.py" "${BUNDLE_DIR}/worker.js" "${DIR}/" \
+  cp "${BUNDLE_DIR}/sync.py" "${BUNDLE_DIR}/sui_setup.py" "${BUNDLE_DIR}/worker.js" "${BUNDLE_DIR}/tar-progress.sh" "${DIR}/" \
     || die "bundle scripts not found next to install.sh"
-  chmod 700 "${DIR}/sync.py" "${DIR}/sui_setup.py"
+  chmod 700 "${DIR}/sync.py" "${DIR}/sui_setup.py" "${DIR}/tar-progress.sh"
   install_global_command \
     || echo "warning: could not install the global sui-vpn command (use bash install.sh from this directory)"
   init_panel_db
@@ -1400,6 +1405,7 @@ print_save_block() {
     echo "Panel (fixed): worker not deployed yet; get it with: sudo bash install.sh show"
   fi
   echo "Server code: $(server_code)"
+  echo "filtersui version: ${FILTERSUI_VERSION}"
   if [ -n "${pu}" ]; then
     echo "Panel (internet, secret path): ${pu}${PANEL_BASE_PATH}"
   else
@@ -1455,6 +1461,7 @@ cmd_show() {
   else
     echo "Subscription: worker not deployed yet (see README fallback)"
   fi
+  print_banner_compact
 }
 
 cmd_status() {
@@ -1479,6 +1486,7 @@ cmd_status() {
   echo "----- last sync -----"
   systemctl status sui-sync.service --no-pager -n 5 2>/dev/null | tail -5 || true
   run_checks
+  print_banner_compact
 }
 
 cmd_panel_on() {
@@ -1595,27 +1603,104 @@ cmd_sync_now() {
   python3 "${DIR}/sync.py" "$@"
 }
 
+# tar_bar_args TOTAL — set the global array TAR_BAR to the GNU tar
+# --checkpoint args that draw a progress bar, or leave it empty when
+# the bar is unavailable (not a terminal, no tar-progress.sh, non-GNU
+# tar, or no total). The caller exports TOTAL_BYTES / PROGRESS_LABEL
+# for tar's environment and prints a newline when tar finishes, since
+# the bar rewrites one line with \r. ~50 bar updates per run.
+tar_bar_args() {
+  TAR_BAR=()
+  local total="$1" interval
+  [ -t 1 ] || return 1
+  [ -x "${DIR}/tar-progress.sh" ] || return 1
+  [ "${total}" -gt 0 ] 2>/dev/null || return 1
+  tar --version 2>/dev/null | grep -q 'GNU tar' || return 1
+  interval=$(( total / 512000 + 1 ))
+  TAR_BAR=(--checkpoint="${interval}" --checkpoint-action="exec=${DIR}/tar-progress.sh")
+}
+
 cmd_backup() {
   need_root backup
   load_state
-  local stamp dest
+  local stamp dest size host total
   stamp=$(date +%Y%m%d-%H%M)
   dest="${TARGET_HOME}/sui-vpn-backup-${stamp}.tar.gz"
   # state.env (panel password, CF token, client UUIDs) + the s-ui DB are
   # the only copies of the secrets: without them a dead VPS means new
   # UUIDs and new subscription links for every client. Keep this file
   # OFF the server (it contains secrets — treat it like a password).
-  tar czf "${dest}" -C "${TARGET_HOME}" sui-vpn 2>/dev/null \
-    || die "backup failed"
+  total=$(du -sb "${TARGET_HOME}/sui-vpn" 2>/dev/null | cut -f1)
+  tar_bar_args "${total:-0}" "backup"
+  if [ "${#TAR_BAR[@]}" -gt 0 ]; then
+    # -czf (not czf): with long options before it, tar only accepts
+    # the dashed form as the operation.
+    TOTAL_BYTES="${total}" PROGRESS_LABEL="backup" tar "${TAR_BAR[@]}" -czf "${dest}" -C "${TARGET_HOME}" sui-vpn 2>/dev/null \
+      || die "backup failed"
+    echo ""
+  else
+    tar czf "${dest}" -C "${TARGET_HOME}" sui-vpn 2>/dev/null \
+      || die "backup failed"
+  fi
   chmod 600 "${dest}"
-  echo "backup written: ${dest} (mode 600)"
+  size=$(du -h "${dest}" 2>/dev/null | cut -f1)
+  echo "backup written: ${dest} (${size}, mode 600)"
+  host=$(hostname -I 2>/dev/null | awk '{print $1}')
+  if [ -n "${host}" ]; then
+    echo "download: scp ${SUDO_USER:-root}@${host}:${dest} ."
+  else
+    echo "download it with SFTP (Termius) from ${TARGET_HOME}."
+  fi
   echo "copy it OFF this server now; it contains all secrets."
+}
+
+list_backups() {
+  # list_backups — print the backups on this server, newest first:
+  # the auto pre-change snapshots in ~/sui-vpn/backups/ and the
+  # manual backups in the home directory. Nothing when there are none.
+  ls -t "${DIR}/backups"/pre-change-*.tar.gz "${TARGET_HOME}"/sui-vpn-backup-*.tar.gz 2>/dev/null || true
+}
+
+backup_kind() {
+  # backup_kind PATH — "auto" for a pre-change snapshot, "manual" else.
+  case "$1" in "${DIR}/backups/"*) echo "auto" ;; *) echo "manual" ;; esac
+}
+
+backup_date() {
+  # backup_date PATH — the backup's mtime as "YYYY-MM-DD HH:MM".
+  date -d "@$(stat -c %Y "$1" 2>/dev/null || echo 0)" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "unknown"
 }
 
 cmd_restore() {
   need_root restore
   local file="${1:-}"
-  [ -n "${file}" ] || die "usage: sudo bash install.sh restore <backup-file.tar.gz>"
+  if [ -z "${file}" ]; then
+    # No file given: list the backups on this server and pick by
+    # number. A path still works for a backup copied in from outside.
+    local files=() i f choice
+    while IFS= read -r f; do files+=("${f}"); done < <(list_backups)
+    if [ "${#files[@]}" -eq 0 ]; then
+      echo "no backups found on this server."
+      echo "usage: sudo bash install.sh restore <backup-file.tar.gz>"
+      echo "copy a backup onto the server first (scp / SFTP), then give its path."
+      return 0
+    fi
+    echo "Backups on this server:"
+    for i in "${!files[@]}"; do
+      f="${files[${i}]}"
+      printf ' %2d) %-6s %s  %6s  %s\n' "$((i + 1))" "$(backup_kind "${f}")" "$(backup_date "${f}")" "$(du -h "${f}" 2>/dev/null | cut -f1)" "$(basename "${f}")"
+    done
+    printf 'pick a number (or type a path to a backup file, empty to cancel): '
+    read -r choice || { echo ""; return 0; }
+    [ -n "${choice}" ] || { echo "aborted"; return 0; }
+    if [[ "${choice}" =~ ^[0-9]+$ ]] && [ "${choice}" -ge 1 ] && [ "${choice}" -le "${#files[@]}" ]; then
+      file="${files[$((choice - 1))]}"
+    elif [ -f "${choice}" ]; then
+      file="${choice}"
+    else
+      die "no such backup: ${choice}"
+    fi
+  fi
   [ -f "${file}" ] || die "backup file not found: ${file}"
   tar tzf "${file}" 2>/dev/null | grep -qx "sui-vpn/state.env" \
     || die "not a sui-vpn backup (no sui-vpn/state.env inside)"
@@ -1625,8 +1710,22 @@ cmd_restore() {
     case "${ans}" in y|Y) : ;; *) echo "aborted"; return 0 ;; esac
     systemctl stop sui-panel sui-tunnel sui-panel-tunnel sui-sync.timer sui-sync.path 2>/dev/null || true
   fi
-  tar xzf "${file}" -C "${TARGET_HOME}" \
-    || die "restore failed while extracting"
+  local total
+  total=$(gzip -dc "${file}" 2>/dev/null | wc -c)
+  if [ -z "${total}" ] || [ "${total}" = "0" ]; then
+    total=$(stat -c %s "${file}" 2>/dev/null || echo 0)
+  fi
+  tar_bar_args "${total}" "restore"
+  if [ "${#TAR_BAR[@]}" -gt 0 ]; then
+    # -xzf (not xzf): with long options before it, tar only accepts
+    # the dashed form as the operation.
+    TOTAL_BYTES="${total}" PROGRESS_LABEL="restore" tar "${TAR_BAR[@]}" -xzf "${file}" -C "${TARGET_HOME}" \
+      || die "restore failed while extracting"
+    echo ""
+  else
+    tar xzf "${file}" -C "${TARGET_HOME}" \
+      || die "restore failed while extracting"
+  fi
   chmod 600 "${STATE}" 2>/dev/null || true
   # systemd units live outside the backup; on a fresh server run install
   # first (it keeps the restored state instead of generating a new one).
@@ -1666,6 +1765,41 @@ cmd_uninstall() {
   echo "remove them in the dashboard if wanted (see README: Uninstall)."
 }
 
+print_banner() {
+  # Full banner: a filter funnel drawn with lines over the boxed
+  # name + version. Shown at the top of the menu and in help.
+  # The box is drawn to fit the version, so it stays aligned when
+  # the version grows (v1.0.0 -> v10.2.3).
+  local n i rule
+  n=$((17 + ${#FILTERSUI_VERSION}))
+  rule=""
+  for ((i = 0; i < n; i++)); do rule+="─"; done
+  echo "     _______________"
+  echo "     \\             /"
+  echo "      \\           /"
+  echo "       \\         /"
+  echo "        \\       /"
+  echo "         \\     /"
+  echo "          \\   /"
+  echo "           | |"
+  echo "           |_|"
+  echo "┌${rule}┐"
+  echo "│  ◈ filtersui  v${FILTERSUI_VERSION} │"
+  echo "└${rule}┘"
+}
+
+print_banner_compact() {
+  # One-line banner for show / status / SAVE.
+  echo "◈ filtersui v${FILTERSUI_VERSION}"
+}
+
+cmd_version() {
+  # Print the versions of everything on this server.
+  print_banner_compact
+  echo "s-ui: $("${BIN}/sui" -v 2>/dev/null | head -1 || echo "(not installed)")"
+  echo "cloudflared: $("${BIN}/cloudflared" --version 2>/dev/null | head -1 || echo "(not installed)")"
+}
+
 cmd_menu() {
   # Numbered menu — the default when run with no command, and the
   # `filtersui` entry point. Pick a number (no need to type the command
@@ -1676,7 +1810,8 @@ cmd_menu() {
     echo "run as root: sudo filtersui"
     return 1
   fi
-  local choice file
+  local choice
+  print_banner
   if [ -f "${STATE}" ]; then
     . "${STATE}" 2>/dev/null
     # The fixed panel address comes first, then the server code —
@@ -1692,19 +1827,19 @@ cmd_menu() {
   fi
   while :; do
     echo ""
-    echo "S-UI Panel — filtersui"
-    echo " 1) install           نصب کامل (پنل + تونل + ورکر + سینک)"
-    echo " 2) show              آدرس پنل و لینک سابکریپشن"
-    echo " 3) status            وضعیت سرویس‌ها و آخرین سینک"
-    echo " 4) sync-now          سینک فوری کلاینت‌ها به ورکر"
-    echo " 5) deploy-worker     آپلود دوباره worker.js به کلادفلر"
-    echo " 6) change-subdomain  عوض کردن ساب‌دامین workers.dev"
-    echo " 7) update-sui        به‌روزرسانی s-ui به جدیدترین نسخه"
-    echo " 8) panel-on          باز کردن پنل از اینترنت"
-    echo " 9) panel-off         بستن پنل (فقط SSH)"
-    echo "10) backup            بکاپ گرفتن از ~/sui-vpn"
-    echo "11) restore           برگرداندن بکاپ"
-    echo "12) uninstall         حذف نصب (اول تایید می‌گیره)"
+    echo " 1) install           Full install (panel + tunnels + worker + sync)"
+    echo " 2) show              Panel address and subscription links"
+    echo " 3) status            Service states and last sync"
+    echo " 4) sync-now          Sync clients to the Worker now"
+    echo " 5) deploy-worker     Re-upload worker.js to Cloudflare"
+    echo " 6) change-subdomain  Change the workers.dev subdomain"
+    echo " 7) update-sui        Update s-ui to the newest release"
+    echo " 8) panel-on          Allow panel access from the internet"
+    echo " 9) panel-off         Panel only via SSH forward"
+    echo "10) backup            Back up ~/sui-vpn"
+    echo "11) restore           Restore from a backup"
+    echo "12) uninstall         Remove the install (asks first)"
+    echo "13) version           Show versions (filtersui, s-ui, cloudflared)"
     echo " 0) exit"
     printf 'choice: '
     read -r choice || { echo ""; return 0; }
@@ -1720,18 +1855,17 @@ cmd_menu() {
       8|panel-on) cmd_panel_on ;;
       9|panel-off) cmd_panel_off ;;
       10|backup) cmd_backup ;;
-      11|restore)
-        printf 'backup file: '
-        read -r file || { echo ""; return 0; }
-        [ -n "${file}" ] && cmd_restore "${file}" ;;
+      11|restore) cmd_restore ;;
       12|uninstall) cmd_uninstall ;;
+      13|version) cmd_version ;;
       help) cmd_help ;;
-      *) echo "invalid choice: '${choice}' — pick a number 0-12." ;;
+      *) echo "invalid choice: '${choice}' — pick a number 0-13." ;;
     esac
   done
 }
 
 cmd_help() {
+  print_banner
   cat <<'EOF'
 usage: bash install.sh <command>
        (after install, from any directory: sudo filtersui [<command>])
@@ -1748,8 +1882,9 @@ usage: bash install.sh <command>
   panel-on       allow panel access from the internet
   panel-off      panel reachable only via SSH forward
   backup         tarball of ~/sui-vpn (contains secrets)
-  restore <file> restore ~/sui-vpn from a backup tarball
+  restore [file] restore ~/sui-vpn from a backup (lists on-server backups when no file is given)
   uninstall      remove the install (Worker + KV stay in Cloudflare)
+  version        show versions (filtersui, s-ui, cloudflared)
   help           show this list
 EOF
 }
@@ -1768,6 +1903,7 @@ case "${1:-menu}" in
   10|backup) cmd_backup ;;
   11|restore) shift; cmd_restore "$@" ;;
   12|uninstall) cmd_uninstall ;;
+  13|version) cmd_version ;;
   help) cmd_help ;;
   *) cmd_help >&2; exit 1 ;;
 esac

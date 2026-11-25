@@ -102,12 +102,14 @@ by `uninstall`. The dispatch at the bottom of install.sh maps names
 *and* numbers to commands (`3` = `status`), and with no argument it
 opens the numbered menu (`cmd_menu`) instead of installing — the
 one-command install always passes `install` explicitly, so nothing
-there changes. The menu prints the server code at the top (so you
-know which server you are on), loops after each action until 0/q,
-accepts a command name as well as a number, and exits at once on
-stdin EOF, so it never hangs in a script or on `/dev/null`. It
-requires root (the commands it offers do); direct commands keep
-their own checks (`show`/`status` work without sudo).
+there changes. The menu is in English. It prints the banner (a
+filter funnel over the boxed name + version) at the top, then the
+fixed panel address and the server code (so you know which server
+you are on), loops after each action until 0/q, accepts a command
+name as well as a number, and exits at once on stdin EOF, so it
+never hangs in a script or on `/dev/null`. It requires root (the
+commands it offers do); direct commands keep their own checks
+(`show`/`status` work without sudo).
 
 Destructive actions always confirm first, in the menu and on the
 command line — `uninstall` (removes the panel, tunnels and
@@ -115,6 +117,40 @@ command line — `uninstall` (removes the panel, tunnels and
 worker on the account), `restore` (replaces `~/sui-vpn`). `update-sui`
 and a re-run of `install` do not ask: they snapshot the DB + state
 first (`backup_before_change`, last 5 kept), so they are reversible.
+
+### Version and banner
+
+`filtersui` has its own version: `FILTERSUI_VERSION` at the top of
+install.sh (semver, currently 1.0.0; PATCH for fixes, MINOR for new
+features, MAJOR for breaking changes). `sudo filtersui version`
+prints it together with the s-ui and cloudflared versions, and the
+compact banner (`◈ filtersui v1.0.0`) is the last line of `show`,
+`status` and the SAVE block. The full banner (`print_banner`) is a
+funnel drawn with lines over a box whose width is computed from the
+version, so it stays aligned when the version grows.
+
+### Backup and restore progress, restore listing
+
+`backup` and `restore` show a progress bar on a terminal: GNU tar
+`--checkpoint` runs `tar-progress.sh` (shipped to `~/sui-vpn/` by
+install) at each checkpoint, which draws
+`backup: [##########----------] 50%` on one line with `\r`. The
+total is the uncompressed size (`du -sb` for backup, `gzip -dc |
+wc -c` for restore, file size as a fallback); the checkpoint
+interval is sized for ~50 updates. The bar is off when stdout is
+not a terminal, when `tar-progress.sh` is missing, or on non-GNU
+tar — plain `tar` then runs, so nothing breaks. The tar operation
+uses the dashed form (`-czf`/`-xzf`): with long options before it,
+GNU tar only accepts the dashed form as the operation.
+
+`restore` with no file lists the backups on this server
+(`list_backups`: auto pre-change snapshots in `~/sui-vpn/backups/`
+plus manual backups in the home directory, `ls -t`, newest first,
+with kind, date and size) and restores the one picked by number; a
+path still works for a backup copied in from outside, and with no
+backups at all it says so and prints the usage. `backup` prints the
+file's path, its size, and the `scp` command to download it
+(`hostname -I` for the address, SFTP as the fallback).
 
 ### Server identity (the server code)
 

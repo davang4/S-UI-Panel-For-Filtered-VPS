@@ -39,9 +39,19 @@ What is covered:
   command by number, loops, rejects an invalid number, quits on q,
   and exits at once on EOF; the dispatch maps numbers and names to
   commands and opens the menu with no argument; the menu header
-  prints the fixed panel address first, then the server code;
+  prints the fixed panel address first, then the server code, and
+  shows the banner; the menu labels are in English and it runs
+  `restore` with no path (restore lists backups itself) and `version`
+  by number 13; the dispatch maps 13/`version` to `version`;
   `update-sui` does nothing when s-ui is already the latest version
   (or the same version after download), swaps in a newer version,
-  and asks first on a major-version jump (aborts on N, swaps on y).
+  and asks first on a major-version jump (aborts on N, swaps on y);
+  the banner holds the funnel, the boxed name + version, and grows
+  with a longer version; `version` prints all three versions;
+  `tar-progress.sh` draws the bar at 0/50/100% and clamps; `backup`
+  writes the file and prints its path, size and download command;
+  `restore` lists on-server backups (auto + manual), restores the
+  picked number or a given path, says so when there are none, and
+  rejects an out-of-range number.
 
 Add a test before changing the behaviour it covers.

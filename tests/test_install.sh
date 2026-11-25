@@ -199,9 +199,10 @@ else
 fi
 
 # ---- menu + global links + destructive confirms ----
-for fn in cmd_menu cmd_help install_global_command remove_global_command cmd_uninstall cmd_change_subdomain sui_version_of sui_version_major latest_sui_version cmd_update_sui; do
+for fn in cmd_menu cmd_help install_global_command remove_global_command cmd_uninstall cmd_change_subdomain sui_version_of sui_version_major latest_sui_version cmd_update_sui print_banner print_banner_compact cmd_version tar_bar_args list_backups backup_kind backup_date cmd_restore cmd_backup; do
   extract_fn "${fn}" >> "${FN_TMP}"
 done
+FILTERSUI_VERSION="1.0.0"
 # shellcheck disable=SC1090
 source "${FN_TMP}"
 
@@ -269,8 +270,9 @@ cmd_update_sui() { echo "CALLED:update-sui"; }
 cmd_panel_on() { echo "CALLED:panel-on"; }
 cmd_panel_off() { echo "CALLED:panel-off"; }
 cmd_backup() { echo "CALLED:backup"; }
-cmd_restore() { echo "CALLED:restore:$1"; }
+cmd_restore() { echo "CALLED:restore:${1:-}"; }
 cmd_uninstall() { echo "CALLED:uninstall"; }
+cmd_version() { echo "CALLED:version"; }
 STATE="${TMP}/no-such-state.env"
 out=$(printf '3\n0\n' | cmd_menu 2>&1); code=$?
 check "menu runs status by number" "${out}" "CALLED:status"
@@ -279,8 +281,14 @@ out=$(printf '99\n0\n' | cmd_menu 2>&1)
 check "menu rejects an invalid number" "${out}" "invalid choice"
 out=$(printf 'q\n' | cmd_menu 2>&1)
 check_not "menu quits on q without running anything" "${out}" "CALLED:"
-out=$(printf '11\n/tmp/x.tar.gz\n0\n' | cmd_menu 2>&1)
-check "menu asks for the backup file on restore" "${out}" "CALLED:restore:/tmp/x.tar.gz"
+out=$(printf '11\n0\n' | cmd_menu 2>&1)
+check "menu runs restore with no path (restore lists backups itself)" "${out}" "CALLED:restore:"
+out=$(printf '13\n0\n' | cmd_menu 2>&1)
+check "menu runs version by number" "${out}" "CALLED:version"
+out=$(printf 'q\n' | cmd_menu 2>&1)
+check "menu labels are English" "${out}" "Full install (panel + tunnels + worker + sync)"
+check "menu lists version" "${out}" "Show versions (filtersui, s-ui, cloudflared)"
+check_not "menu has no Persian labels" "${out}" "نصب کامل"
 out=$(cmd_menu </dev/null 2>&1); code=$?
 [ "${code}" = "0" ] && ok "menu exits at once on EOF" || bad "menu on EOF (got ${code})"
 
@@ -300,6 +308,7 @@ dispatch_calls() {
     cmd_backup() { echo "backup"; }
     cmd_restore() { echo "restore:$*"; }
     cmd_uninstall() { echo "uninstall"; }
+    cmd_version() { echo "version"; }
     cmd_help() { echo "help"; }
     set -- "$@"
     eval "$(sed -n '/^case "\${1:-menu}" in$/,$p' "${REPO}/install.sh")"
@@ -310,6 +319,8 @@ dispatch_calls() {
 [ "$(dispatch_calls status)" = "status" ] && ok "dispatch: status by name" || bad "dispatch: status by name"
 [ "$(dispatch_calls 4 --dry-run)" = "sync-now:--dry-run" ] && ok "dispatch: 4 passes args to sync-now" || bad "dispatch: 4 --dry-run"
 [ "$(dispatch_calls 12)" = "uninstall" ] && ok "dispatch: 12 runs uninstall" || bad "dispatch: 12"
+[ "$(dispatch_calls 13)" = "version" ] && ok "dispatch: 13 runs version" || bad "dispatch: 13"
+[ "$(dispatch_calls version)" = "version" ] && ok "dispatch: version by name" || bad "dispatch: version by name"
 out=$(dispatch_calls bogus 2>&1); code=$?
 [ "${code}" = "1" ] && [ "${out}" = "help" ] && ok "dispatch: unknown arg prints help (stderr) and exits 1" || bad "dispatch: bogus (code ${code}, out ${out})"
 
@@ -392,6 +403,95 @@ if [[ "${out}" == *"Panel (fixed): https://sui-sub-3.test.workers.dev/app-xyz/"*
 else
   bad "menu header order (got: ${out})"
 fi
+check "menu header shows the banner" "${out}" "◈ filtersui  v1.0.0"
+
+# ---- banner + version ----
+out=$(print_banner 2>&1)
+check "banner has the funnel" "${out}" "_______________"
+check "banner has the boxed name + version" "${out}" "◈ filtersui  v1.0.0"
+check "banner has the box borders" "${out}" "┌"
+FILTERSUI_VERSION="10.2.3"
+out=$(print_banner 2>&1)
+check "banner box grows with a longer version" "${out}" "v10.2.3"
+FILTERSUI_VERSION="1.0.0"
+[ "$(print_banner_compact)" = "◈ filtersui v1.0.0" ] && ok "compact banner" || bad "compact banner"
+VER_BIN="${TMP}/ver-bin"; mkdir -p "${VER_BIN}"
+printf '#!/usr/bin/env bash\necho "s-ui 1.6.8"\n' > "${VER_BIN}/sui"; chmod +x "${VER_BIN}/sui"
+printf '#!/usr/bin/env bash\necho "cloudflared version 2026.11.2"\n' > "${VER_BIN}/cloudflared"; chmod +x "${VER_BIN}/cloudflared"
+BIN="${VER_BIN}"
+out=$(cmd_version 2>&1)
+check "version shows filtersui" "${out}" "filtersui v1.0.0"
+check "version shows s-ui" "${out}" "s-ui 1.6.8"
+check "version shows cloudflared" "${out}" "cloudflared version 2026.11.2"
+
+# ---- tar-progress.sh: the bar math ----
+TP="${REPO}/tar-progress.sh"
+out=$(TAR_CHECKPOINT=5 TOTAL_BYTES=102400 PROGRESS_LABEL=backup sh "${TP}" 2>&1)
+check "progress bar at 50%" "${out}" "[##########----------] 50%"
+out=$(TAR_CHECKPOINT=500 TOTAL_BYTES=102400 PROGRESS_LABEL=restore sh "${TP}" 2>&1)
+check "progress bar clamps at 100%" "${out}" "100%"
+out=$(TAR_CHECKPOINT=0 TOTAL_BYTES=102400 PROGRESS_LABEL=backup sh "${TP}" 2>&1)
+check "progress bar at 0%" "${out}" "[--------------------] 0%"
+# No TTY in this harness, so tar_bar_args must leave the bar off.
+DIR="${TMP}/bar-home"; mkdir -p "${DIR}"
+cp "${TP}" "${DIR}/tar-progress.sh"; chmod +x "${DIR}/tar-progress.sh"
+tar_bar_args 102400 "backup" || true
+[ "${#TAR_BAR[@]}" -eq 0 ] && ok "tar_bar_args off without a TTY" || bad "tar_bar_args on without a TTY"
+
+# ---- backup: path, size, download ----
+BK_HOME="${TMP}/backup-home"; BK_DIR="${BK_HOME}/sui-vpn"
+mkdir -p "${BK_DIR}/db"
+echo "state" > "${BK_DIR}/state.env"
+echo "db" > "${BK_DIR}/db/s-ui.db"
+TARGET_HOME="${BK_HOME}"; DIR="${BK_DIR}"
+hostname() { echo "203.0.113.7"; }
+SUDO_USER="muse"
+out=$(cmd_backup 2>&1); code=$?
+[ "${code}" = "0" ] && ok "backup exits 0" || bad "backup exit (got ${code})"
+BK_FILE=$(ls -t "${BK_HOME}"/sui-vpn-backup-*.tar.gz 2>/dev/null | head -1)
+[ -f "${BK_FILE}" ] && ok "backup file written" || bad "backup file missing"
+check "backup prints its path" "${out}" "${BK_FILE}"
+check "backup prints the download command" "${out}" "scp muse@203.0.113.7:${BK_FILE} ."
+check "backup warns to copy it off the server" "${out}" "copy it OFF this server"
+
+# ---- restore: list and pick by number ----
+RS_HOME="${TMP}/restore-home"; RS_DIR="${RS_HOME}/sui-vpn"
+mkdir -p "${RS_DIR}/backups"
+TARGET_HOME="${RS_HOME}"; DIR="${RS_DIR}"
+# Two valid backups: an auto snapshot (older) and a manual one (newer).
+mkdir -p "${TMP}/rs-src/sui-vpn"
+printf 'new-state' > "${TMP}/rs-src/sui-vpn/state.env"
+printf 'new-file' > "${TMP}/rs-src/sui-vpn/new.txt"
+tar czf "${RS_DIR}/backups/pre-change-20261125-110000.tar.gz" -C "${TMP}/rs-src" sui-vpn 2>/dev/null
+tar czf "${RS_HOME}/sui-vpn-backup-20261125-1200.tar.gz" -C "${TMP}/rs-src" sui-vpn 2>/dev/null
+touch -d "2026-11-25 11:00" "${RS_DIR}/backups/pre-change-20261125-110000.tar.gz"
+touch -d "2026-11-25 12:00" "${RS_HOME}/sui-vpn-backup-20261125-1200.tar.gz"
+echo "old" > "${RS_DIR}/old.txt"
+PANEL_UNIT=""
+# The update-sui section re-pointed the systemctl stub at upd_calls;
+# point it back at systemctl_calls for the restore checks.
+systemctl() { echo "systemctl $*" >> "${TMP}/systemctl_calls"; }
+: > "${TMP}/systemctl_calls"
+out=$(printf '1\ny\n' | cmd_restore 2>&1); code=$?
+check "restore lists on-server backups" "${out}" "Backups on this server:"
+check "restore lists the manual backup" "${out}" "sui-vpn-backup-20261125-1200.tar.gz"
+check "restore lists the auto snapshot" "${out}" "pre-change-20261125-110000.tar.gz"
+[ -f "${RS_DIR}/new.txt" ] && ok "restore by number extracts the picked backup" || bad "restore by number did not extract"
+check "restore by number restarts services" "$(cat "${TMP}/systemctl_calls")" "systemctl stop sui-panel"
+# A path argument still restores directly (no listing).
+rm -f "${RS_DIR}/new.txt"
+out=$(printf 'y\n' | cmd_restore "${RS_HOME}/sui-vpn-backup-20261125-1200.tar.gz" 2>&1); code=$?
+[ -f "${RS_DIR}/new.txt" ] && ok "restore by path extracts directly" || bad "restore by path did not extract"
+# An invalid number dies in its own subshell (die exits the caller).
+out=$(printf '9\n' | cmd_restore 2>&1); code=$?
+check "restore rejects an out-of-range number" "${out}" "no such backup"
+# No backups at all: a clear message, no prompt, no failure.
+rm -f ${RS_HOME}/sui-vpn-backup-*.tar.gz
+rm -rf "${RS_DIR}/backups"
+mkdir -p "${RS_DIR}/backups"
+out=$(cmd_restore </dev/null 2>&1); code=$?
+check "restore with no backups says so" "${out}" "no backups found on this server"
+[ "${code}" = "0" ] && ok "restore with no backups exits 0" || bad "restore with no backups (got ${code})"
 
 echo "---"
 echo "install tests: ${PASS} passed, ${FAIL} failed"

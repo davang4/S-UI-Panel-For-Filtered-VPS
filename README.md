@@ -115,11 +115,14 @@ tmux, where hidden `read` can fail), export `CF_API_TOKEN` and
 
 After install, every command also works from any directory — no `cd`
 needed. `sudo filtersui` with no command opens a numbered menu (the
-server code is shown at the top, so you know which server you are
-on); pick a number — no need to type the command name — and the menu
-comes back after each action until you pick 0. A number also works as
-a direct argument (`sudo filtersui 3` runs `status`), and the direct
-commands work too:
+banner, the fixed panel address and the server code are shown at the
+top, so you know which server you are on); pick a number — no need to
+type the command name — and the menu comes back after each action
+until you pick 0. A number also works as a direct argument
+(`sudo filtersui 3` runs `status`), and the direct commands work too.
+The menu is in English, and `filtersui` has its own version
+(`FILTERSUI_VERSION`, currently 1.0.0) — `sudo filtersui version`
+prints it together with the s-ui and cloudflared versions:
 
 ```bash
 sudo filtersui          # numbered menu
@@ -155,9 +158,10 @@ reversible.
 | `change-subdomain [name]` | Replace the account's workers.dev subdomain with a custom one (it changes the fixed address of every worker on the account; re-run `deploy-worker` on each other server afterwards). |
 | `update-sui` | Replace s-ui with the newest GitHub release. Checks the version first — if s-ui is already the latest, it says so and does nothing (no download, no restart). A major-version jump (1.x → 2.x) asks first, because a new major version can reset the panel database on first start. Verifies the new binary runs first and keeps a timestamped backup of the old one — and snapshots the s-ui DB + state first (`~/sui-vpn/backups/`, last 5 kept). |
 | `panel-on` / `panel-off` | Allow / stop panel access from the internet. Off means the panel is reachable only via SSH forward. |
-| `backup` | Tarball of `~/sui-vpn` (mode 600). Contains every secret — copy it off the server. |
-| `restore <file>` | Restore `~/sui-vpn` from a backup tarball and restart the services. On a fresh server, run `install` afterwards (it keeps the restored state). |
+| `backup` | Tarball of `~/sui-vpn` (mode 600) in the home directory, with a progress bar (on a terminal), its size, and the `scp` command to download it. Contains every secret — copy it off the server. |
+| `restore [file]` | Restore `~/sui-vpn` from a backup tarball and restart the services. With no file it lists the backups on this server (auto pre-change snapshots + manual backups, newest first, with date and size) and restores the one you pick by number; a path still works for a backup copied in from outside. On a fresh server, run `install` afterwards (it keeps the restored state). |
 | `uninstall` | Remove the install from the server (below). Asks first. |
+| `version` | Show the versions on this server: filtersui, s-ui, cloudflared. |
 | `help` | Show the command list. |
 
 ### Users
@@ -204,6 +208,7 @@ broken, instead of guessing.
 
 ```bash
 sudo bash install.sh backup                              # -> ~/sui-vpn-backup-<date>.tar.gz
+sudo bash install.sh restore                              # lists on-server backups, pick by number
 sudo bash install.sh restore ~/sui-vpn-backup-<date>.tar.gz
 ```
 
@@ -211,9 +216,18 @@ The backup holds `state.env` (panel password, Cloudflare token,
 client UUIDs, subscription secret) and the s-ui database — everything
 needed to rebuild the exact same install with the same subscription
 links. **Copy it off the server**; a backup that only exists on the
-VPS dies with the VPS. To move to a new server: copy the backup over,
-run `install` (it keeps the restored state), then `restore` the file
-— or restore first and `install` after; both orders work.
+VPS dies with the VPS. `backup` prints the file's path, its size, and
+the `scp` command to download it (or use SFTP, e.g. in Termius).
+`restore` with no file lists the backups on this server — the auto
+pre-change snapshots in `~/sui-vpn/backups/` and the manual backups
+in the home directory, newest first with date and size — and restores
+the one you pick by number (it still asks first, since it replaces
+`~/sui-vpn`). Both `backup` and `restore` show a progress bar on a
+terminal (GNU tar checkpoints, no extra dependency; plain `tar`
+without a bar when not on a terminal). To move to a new server: copy
+the backup over, run `install` (it keeps the restored state), then
+`restore` the file — or restore first and `install` after; both
+orders work.
 
 ### Uninstall
 

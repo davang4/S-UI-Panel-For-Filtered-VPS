@@ -193,6 +193,19 @@ python3 -c "import sqlite3; c=sqlite3.connect('db/s-ui.db'); print('clients:', c
   every client UUID) — recreate them in the panel from those keys.
   Do not re-run `update-sui` until the panel shows the users again.
 
+## Where do backups go? How do I download one?
+
+- **Manual backup** (`backup`, menu 10): `${HOME}/sui-vpn-backup-<date>.tar.gz`
+  (mode 600). `backup` prints the path, the size, and the `scp`
+  command to download it; or download it with SFTP (e.g. in Termius)
+  from the home directory.
+- **Auto snapshots** (before `update-sui` and re-install):
+  `~/sui-vpn/backups/pre-change-<stamp>.tar.gz`, last 5 kept.
+- **Restore** (`restore`, menu 11): with no file it lists both kinds
+  on this server, newest first, and restores the one you pick by
+  number. Give a path only for a backup copied in from outside
+  (e.g. after moving to a new server).
+
 ## `status` shows FAIL on the last sync
 
 - **`last sync error: …`** — the sync's own error message, e.g. a KV
