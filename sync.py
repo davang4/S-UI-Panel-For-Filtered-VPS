@@ -321,8 +321,12 @@ def main():
     # Stable identity of THIS server/install (first client's UUID). The
     # installer reads it back at deploy time: if a KV namespace already
     # carries another server's id, the two servers are sharing one
-    # Worker + KV by mistake (see README: Multiple servers).
+    # Worker + KV by mistake (see README: Multiple servers). The short
+    # server code (first 8 chars) is stamped alongside it, so the
+    # installer can recognise this server's namespace even when
+    # state.env is gone.
     server_id = env.get("CLIENT_UUID", "")
+    server_code = server_id[:8] if server_id else ""
     payload = {}
     name_keys = {}
     for c in clients:
@@ -340,7 +344,8 @@ def main():
 
     digest = hashlib.sha256(
         json.dumps({"h": hostname, "ph": panel_host, "p": payload,
-                    "n": name_keys, "r": routes_json, "s": server_id},
+                    "n": name_keys, "r": routes_json, "s": server_id,
+                    "c": server_code},
                    sort_keys=True).encode()
     ).hexdigest()
 
@@ -403,6 +408,14 @@ def main():
             save_run_state(prev, err)
             return 1
         print(f"sync: server id stamped: {_mask(server_id)}")
+    if server_code and prev.get("server_code") != server_code:
+        r = cf_request(env, "PUT", f"{ns}/values/server:code", server_code)
+        if not r.get("success"):
+            err = f"KV PUT server:code failed: {r.get('errors')}"
+            print(f"sync: {err}")
+            save_run_state(prev, err)
+            return 1
+        print(f"sync: server code stamped: {server_code}")
     if panel_host and prev.get("panel_host") != panel_host:
         r = cf_request(env, "PUT", f"{ns}/values/panel:host", panel_host)
         if not r.get("success"):
@@ -429,7 +442,8 @@ def main():
                     "names": sorted(name_keys),
                     "panel_host": panel_host, "subjson": routes_json,
                     "routes_source": routes_source,
-                    "server_id": server_id}, None)
+                    "server_id": server_id,
+                    "server_code": server_code}, None)
     # The hostname is in tunnel.log and `show`; the journal line does
     # not repeat it.
     print(f"sync: wrote {len(payload)} subscription(s) "

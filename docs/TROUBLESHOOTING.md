@@ -141,6 +141,25 @@ IP — and needs a public UDP port plus a TLS certificate (sing-box
 refuses Hysteria2 without TLS). That is a property of the tunnel, not
 a bug in this setup; VLESS+WS is the all-networks path.
 
+## `state.env` was deleted / a re-install made a new address
+
+The installer recognises the server by itself: on a re-run with no
+stored names it scans the account's KV namespaces for one whose
+`server:id` (or `server:code`) matches a client UUID in this panel's
+DB, and adopts that Worker + KV — the fixed address stays the same.
+It prints `found this server's existing Worker + KV on Cloudflare
+(server code …) — reusing them, no new address.` when it does.
+
+- If it instead created new names, the panel DB had no clients yet
+  (nothing to match against), or the old namespace was never synced
+  (no `server:id` stamped — the first sync stamps it, so this only
+  happens within a minute of the very first install). Re-run
+  `deploy-worker` after the first sync.
+- `ERROR: this KV namespace already belongs to another server` — the
+  deploy stopped on purpose (it used to warn and continue after 10 s).
+  Give this server its own names and re-run, as the message says.
+  Never force two servers onto one Worker + KV.
+
 ## `status` shows FAIL on the last sync
 
 - **`last sync error: …`** — the sync's own error message, e.g. a KV

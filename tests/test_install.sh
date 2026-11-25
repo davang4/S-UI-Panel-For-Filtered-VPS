@@ -34,7 +34,9 @@ extract_fn() {
 FN_TMP="${TMP}/fns.sh"
 : > "${FN_TMP}"
 for fn in die sync_state_info run_checks backup_before_change write_units \
-          _url_from_log tunnel_url panel_tunnel_url; do
+          _url_from_log tunnel_url panel_tunnel_url server_code \
+          local_client_uuids panel_sub_secret kv_get_value \
+          find_own_namespace worker_own_namespace guard_namespace_owner; do
   extract_fn "${fn}" >> "${FN_TMP}"
 done
 # shellcheck disable=SC1090
@@ -119,6 +121,82 @@ check "path unit watches the tunnel log" "$(cat "${PATH_UNIT}")" "PathChanged=${
 check "path unit watches the panel tunnel log" "$(cat "${PATH_UNIT}")" "PathChanged=${PTLOG}"
 check "path unit triggers the sync service" "$(cat "${PATH_UNIT}")" "Unit=sui-sync.service"
 check "timer still written" "$(ls "${TIMER_UNIT}" 2>/dev/null)" "${TIMER_UNIT}"
+
+# ---- server code + self-recognition ----
+UUID1="5c0b21ef-178a-4b3e-b0f3-4a813e7073ee"
+UUID2="6d1c32f0-289b-5c4f-c104-5b924f8184ff"
+OTHER_UUID="aaaaaaaa-1111-2222-3333-444444444444"
+CLIENT_UUID="${UUID1}"
+CF_API="https://api.cloudflare.com/client/v4"
+CF_ACCOUNT_ID="acct1"
+CF_API_TOKEN="fake-token"
+# A real panel DB: two clients + a subURI carrying a secret.
+PANEL_DB="${TMP}/panel.db"
+python3 - "${PANEL_DB}" <<'PYEOF'
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("CREATE TABLE clients (name TEXT, enable INTEGER, config TEXT, volume INTEGER, expiry INTEGER, up INTEGER, down INTEGER)")
+for name, uuid in (("davang", "5c0b21ef-178a-4b3e-b0f3-4a813e7073ee"), ("friend", "6d1c32f0-289b-5c4f-c104-5b924f8184ff")):
+    con.execute("INSERT INTO clients VALUES (?,?,?,?,?,?,?)",
+                (name, 1, json.dumps({"vless": {"uuid": uuid}}), 0, 0, 0, 0))
+con.execute("CREATE TABLE settings (key TEXT, value TEXT)")
+con.execute("INSERT INTO settings VALUES ('subURI', 'https://sui-sub-3.test.workers.dev/sub/abcdef1234567890/')")
+con.commit(); con.close()
+PYEOF
+DBFILE="${PANEL_DB}"
+
+[ "$(server_code)" = "5c0b21ef" ] && ok "server code is the first 8 chars of the identity UUID" \
+  || bad "server code (got $(server_code))"
+uuids="$(local_client_uuids)"
+check "local client UUIDs from the panel DB" "${uuids}" "${UUID1}"
+check "local client UUIDs include the second client" "${uuids}" "${UUID2}"
+[ "$(panel_sub_secret)" = "abcdef1234567890" ] && ok "SUB_SECRET recovered from the panel subURI" \
+  || bad "SUB_SECRET recovery (got $(panel_sub_secret))"
+
+# Stubs for the Cloudflare calls the recognition helpers make.
+CURL_MODE="id"
+cf_api() {
+  case "$2" in
+    *"/storage/kv/namespaces?per_page=100"*)
+      printf '%s' '{"success":true,"result":[{"id":"ns-own","title":"sui-sub-3"},{"id":"ns-other","title":"sui-sub-2"}]}' ;;
+    *) printf '%s' '{"success":true,"result":[]}' ;;
+  esac
+}
+curl() {
+  local url="" a
+  for a in "$@"; do case "${a}" in https://*) url="${a}" ;; esac; done
+  case "${url}" in
+    *"ns-own/values/server:id"*)
+      if [ "${CURL_MODE}" = "code-only" ]; then printf '\n404'; else printf '%s\n200' "${UUID1}"; fi ;;
+    *"ns-other/values/server:id"*) printf '%s\n200' "${OTHER_UUID}" ;;
+    *"ns-own/values/server:code"*) printf '5c0b21ef\n200' ;;
+    *"ns-other/values/server:code"*) printf 'aaaaaaaa\n200' ;;
+    *) printf '\n404' ;;
+  esac
+}
+
+found="$(find_own_namespace)"
+[ "${found}" = "ns-own sui-sub-3" ] && ok "find_own_namespace finds this server's namespace by server:id" \
+  || bad "find_own_namespace (got '${found}')"
+CURL_MODE="code-only"
+found="$(find_own_namespace)"
+[ "${found}" = "ns-own sui-sub-3" ] && ok "find_own_namespace falls back to server:code" \
+  || bad "find_own_namespace by code (got '${found}')"
+CURL_MODE="id"
+own_ns="$(worker_own_namespace "sui-sub-3")"
+[ "${own_ns}" = "ns-own" ] && ok "worker_own_namespace adopts our own worker" \
+  || bad "worker_own_namespace own (got '${own_ns}')"
+worker_own_namespace "sui-sub-2" >/dev/null 2>&1 \
+  && bad "worker_own_namespace must not adopt another server's worker" \
+  || ok "worker_own_namespace refuses another server's worker"
+guard_namespace_owner "ns-own" >/dev/null 2>&1 \
+  && ok "guard allows our own namespace" \
+  || bad "guard blocked our own namespace"
+if guard_namespace_owner "ns-other" >/tmp/guard_out.txt 2>&1; then
+  bad "guard must stop on another server's namespace"
+else
+  check "guard names the other server" "$(cat /tmp/guard_out.txt)" "already belongs to another server"
+fi
 
 echo "---"
 echo "install tests: ${PASS} passed, ${FAIL} failed"

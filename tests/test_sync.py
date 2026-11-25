@@ -184,7 +184,7 @@ class RunStateTests(unittest.TestCase):
         real_cf = sync.cf_request
 
         def fake_cf(env, method, path, body=None, attempts=3):
-            self.calls.append(path)
+            self.calls.append((path, body))
             if self.fail_key and self.fail_key in path:
                 return {"success": False,
                         "errors": [{"code": 1000, "message": "kv down"}]}
@@ -216,6 +216,21 @@ class RunStateTests(unittest.TestCase):
         state = json.load(open(sync.HASHFILE))
         self.assertIsNone(state["last_error"])
         self.assertLess(abs(state["last_run"] - int(time.time())), 60)
+
+    def test_server_code_stamped_in_kv(self):
+        # The server's short code (first 8 chars of its identity UUID)
+        # is stamped in KV as server:code next to server:id, so the
+        # installer can recognise this server's namespace later.
+        code, _ = self.run_main([])
+        self.assertEqual(code, 0)
+        self.assertTrue(any(p.endswith("values/server:id")
+                            for p, _ in self.calls))
+        code_puts = [(p, b) for p, b in self.calls
+                     if p.endswith("values/server:code")]
+        self.assertEqual(len(code_puts), 1)
+        self.assertEqual(code_puts[0][1], UUID1[:8])
+        state = json.load(open(sync.HASHFILE))
+        self.assertEqual(state["server_code"], UUID1[:8])
 
     def test_kv_failure_names_client_not_uuid(self):
         self.fail_key = "values/sub:" + UUID1

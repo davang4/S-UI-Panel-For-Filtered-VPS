@@ -134,7 +134,7 @@ same list.
 | `sync-now` | Sync clients to the Worker right now (the timer does this every 60 s anyway, and immediately when a tunnel URL changes). |
 | `sync-now --dry-run` | Preview what would sync, including the full links. Writes nothing. |
 | `sync-now --force` | Rewrite everything to KV even if nothing changed locally (use after a Worker/KV move, or when another server overwrote this server's `panel:host`). |
-| `deploy-worker` | Re-upload `worker.js` to Cloudflare after editing it. |
+| `deploy-worker` | Re-upload `worker.js` to Cloudflare after editing it. Reuses this server's Worker + KV (by server code); if `state.env` lost its names, it finds and adopts the server's existing Worker + KV instead of creating new ones. |
 | `change-subdomain [name]` | Replace the account's workers.dev subdomain with a custom one (it changes the fixed address of every worker on the account; re-run `deploy-worker` on each other server afterwards). |
 | `update-sui` | Replace s-ui with the newest GitHub release. Verifies the new binary runs first and keeps a timestamped backup of the old one — and snapshots the s-ui DB + state first (`~/sui-vpn/backups/`, last 5 kept). |
 | `panel-on` / `panel-off` | Allow / stop panel access from the internet. Off means the panel is reachable only via SSH forward. |
@@ -272,16 +272,37 @@ links from each panel).
 If a requested Worker name is already taken, the installer says so
 and either suggests the next free one (press Enter to take it, when
 interactive) or picks it automatically (when stdin is not a
-terminal).
+terminal) — unless the name is taken by **this** server's own Worker,
+in which case it is adopted, not replaced.
+
+### The server code — every server's Cloudflare identity
+
+Every server has one short unique code: the first 8 characters of
+its identity UUID (`SERVER_CODE` in state.env, shown by `show` and in
+the SAVE block — e.g. `5c0b21ef`). The code is stamped into the KV
+namespace as `server:code` next to `server:id`, so **everything on
+Cloudflare for that server is tied to that code** — its Worker, its
+KV namespace, its subscription links. A re-run of `install` or
+`deploy-worker` on the same server reuses its stored names and
+namespace, never creates new ones.
+
+If `state.env` is ever lost (deleted, or a DB restored without it),
+the installer does not start from scratch: before creating anything
+new it scans the account's KV namespaces for one whose `server:id`
+(or `server:code`) matches a client UUID in this panel's DB, and
+adopts that Worker + KV — recovering the worker name, the namespace,
+the client UUID and the subscription secret from the panel DB — so
+the fixed address stays the same.
 
 If two servers ever share one Worker + KV, they overwrite each
 other's `panel:host` (the fixed panel URL flips between the two
 panels), `panel:subjson`, the `SUB_SECRET` variable, and any
 client-name keys they both have — the classic symptom is a panel that
 "doesn't come up" while the VPN configs keep working. The installer
-guards against this: `sync.py` stamps each namespace with `server:id`,
-and `deploy-worker` warns loudly (and waits 10 s) if the namespace
-already belongs to another server.
+refuses to let that happen: `sync.py` stamps each namespace with
+`server:id`, and `deploy-worker` **stops** if the namespace already
+belongs to another server (it prints the other server's code and the
+command to give this server its own names).
 
 Already sharing one by mistake? On the second server, re-run the
 install — it now detects the collision, creates a separate Worker +

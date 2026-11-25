@@ -149,6 +149,16 @@ it and revoke the old one:
   panel and re-add them; the sync publishes a new UUID and deletes
   the old key from KV. Only that user gets a new link.
 
+## The server code is not a secret
+
+The server code (first 8 characters of the identity UUID) is printed
+by `show` and in the SAVE block on purpose: it is how you tell your
+servers apart, and it is already inside every subscription link (the
+UUID is the credential in the vless link — the code alone is not
+enough to use it). What stays secret is the full UUID, the SUB_SECRET,
+the panel password and the Cloudflare token. The code's job is
+identity, not authentication.
+
 ## Secrets audit (what is printed where)
 
 Checked against the code; the rule is: secrets are shown only in the

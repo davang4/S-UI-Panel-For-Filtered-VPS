@@ -244,6 +244,7 @@ gen_state() {
   {
     echo "WS_PATH=/${rand}-ws"
     echo "CLIENT_UUID=${uuid}"
+    echo "SERVER_CODE=${uuid%%-*}"
     echo "CLIENT_NAME=${first_client}"
     echo "PANEL_USER=${user}"
     echo "PANEL_PASS=${pass}"
@@ -800,6 +801,148 @@ kv_reuse_allowed() {
   return 1
 }
 
+server_code() {
+  # The server's short unique code on Cloudflare: the first 8 hex chars
+  # of its identity UUID. Stable for the life of the install (the first
+  # client is never recreated), unique per server, and stamped in KV as
+  # server:code next to server:id — so the installer can recognise this
+  # server's Worker + KV on Cloudflare even when state.env is gone.
+  # Usage: server_code (reads CLIENT_UUID).
+  printf '%s' "${CLIENT_UUID%%-*}"
+}
+
+local_client_uuids() {
+  # Print every client UUID in the local panel DB (one per line), or
+  # nothing when the DB is missing/unreadable. Read-only.
+  [ -f "${DBFILE}" ] || return 0
+  python3 - "${DBFILE}" <<'PYEOF' 2>/dev/null
+import json, sqlite3, sys
+try:
+    con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+    for (cfg,) in con.execute("SELECT config FROM clients"):
+        try:
+            uuid = (json.loads(cfg or "{}").get("vless") or {}).get("uuid", "")
+        except Exception:
+            uuid = ""
+        if uuid:
+            print(uuid.lower())
+except Exception:
+    pass
+PYEOF
+}
+
+panel_sub_secret() {
+  # panel_sub_secret — print the SUB_SECRET recovered from the panel's
+  # stored subURI setting (https://<worker>/sub/<secret>/), or nothing
+  # when the panel has no secret. Used when state.env is lost: the
+  # secret lives in the panel DB, not only in state.env.
+  [ -f "${DBFILE}" ] || return 0
+  python3 - "${DBFILE}" <<'PYEOF' 2>/dev/null
+import re, sqlite3, sys
+try:
+    con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+    row = con.execute("SELECT value FROM settings WHERE key='subURI'").fetchone()
+    uri = (row or [""])[0] or ""
+    m = re.search(r"/sub/([^/]+)/?$", uri.rstrip("/"))
+    if m:
+        print(m.group(1))
+except Exception:
+    pass
+PYEOF
+}
+
+kv_get_value() {
+  # kv_get_value NS_ID KEY — print the raw KV value, or nothing when the
+  # key does not exist (404) or the call fails.
+  local body code
+  body=$(curl -s --max-time 15 -w '\n%{http_code}' \
+    "${CF_API}/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${1}/values/${2}" \
+    -H "Authorization: Bearer ${CF_API_TOKEN}" 2>/dev/null || echo "000")
+  code=$(printf '%s' "${body}" | tail -1)
+  [ "${code}" = "200" ] || return 0
+  printf '%s' "${body}" | head -n -1
+}
+
+find_own_namespace() {
+  # find_own_namespace — print "<ns_id> <title>" of the KV namespace
+  # that belongs to THIS server (its server:id is one of the local
+  # panel's client UUIDs, or its server:code matches a local client's
+  # code), or nothing. Used when state.env has no stored names: the
+  # installer adopts this server's existing Worker + KV instead of
+  # creating new ones from scratch.
+  local uuids ns_list ns_id title sid code
+  uuids=$(local_client_uuids)
+  [ -n "${uuids}" ] || return 1
+  ns_list=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces?per_page=100" 2>/dev/null \
+    | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for n in d.get('result') or []:
+    print(n.get('id',''), n.get('title',''))
+" 2>/dev/null)
+  [ -n "${ns_list}" ] || return 1
+  while read -r ns_id title; do
+    [ -n "${ns_id}" ] || continue
+    sid=$(kv_get_value "${ns_id}" "server:id")
+    if [ -n "${sid}" ] && printf '%s\n' "${uuids}" | grep -qx "${sid}"; then
+      echo "${ns_id} ${title}"
+      return 0
+    fi
+    code=$(kv_get_value "${ns_id}" "server:code")
+    if [ -n "${code}" ] && printf '%s\n' "${uuids}" | cut -d- -f1 | grep -qx "${code}"; then
+      echo "${ns_id} ${title}"
+      return 0
+    fi
+  done <<EOF
+${ns_list}
+EOF
+  return 1
+}
+
+worker_own_namespace() {
+  # worker_own_namespace NAME — print the KV namespace id when the
+  # Worker belongs to THIS server (the namespace titled NAME carries
+  # our server:id), or nothing. Used when a requested Worker name is
+  # taken: our own worker is adopted, another server's is not.
+  local ns_id sid
+  ns_id=$(cf_api GET "/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces?per_page=100" 2>/dev/null \
+    | KV_TITLE="$1" python3 -c "
+import sys,json,os
+d=json.load(sys.stdin)
+for n in d.get('result') or []:
+    if n.get('title')==os.environ['KV_TITLE']:
+        print(n.get('id','')); break
+" 2>/dev/null)
+  [ -n "${ns_id}" ] || return 1
+  sid=$(kv_get_value "${ns_id}" "server:id")
+  [ -n "${sid}" ] || return 1
+  printf '%s\n' "$(local_client_uuids)" | grep -qx "${sid}" || return 1
+  echo "${ns_id}"
+}
+
+guard_namespace_owner() {
+  # guard_namespace_owner NS_ID — refuse to use a KV namespace that
+  # already belongs to another server (its server:id is not ours).
+  # Returns 0 when the namespace is ours or empty, 1 otherwise.
+  # Sharing one Worker + KV between servers mixes their panel URLs and
+  # subscriptions, so this is a hard stop, not a warning to wait out.
+  local body code existing
+  body=$(curl -s --max-time 15 -w '\n%{http_code}' \
+    "${CF_API}/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${1}/values/server:id" \
+    -H "Authorization: Bearer ${CF_API_TOKEN}" 2>/dev/null || echo "000")
+  code=$(printf '%s' "${body}" | tail -1)
+  existing=$(printf '%s' "${body}" | head -n -1)
+  if [ "${code}" = "200" ] && [ -n "${existing}" ] \
+     && [ -n "${CLIENT_UUID:-}" ] && [ "${existing}" != "${CLIENT_UUID}" ]; then
+    echo "ERROR: this KV namespace already belongs to another server (server:id ${existing}; this server's code is $(server_code))."
+    echo "Sharing one Worker + KV between servers mixes their panel URLs and subscriptions."
+    echo "Give this server its own names and re-run, e.g.:"
+    echo "  WORKER_NAME=sui-sub-2 KV_TITLE=sui-sub-2 sudo -E bash install.sh deploy-worker"
+    return 1
+  fi
+  return 0
+}
+
 install_global_command() {
   # Copy the installer next to the state (so it survives the bundle dir
   # being deleted) and link it into PATH: `sudo sui-vpn <command>`
@@ -877,6 +1020,43 @@ deploy_worker() {
   resolve_worker_names
   set_state WORKER_NAME "${WORKER_NAME}"
   set_state KV_TITLE "${KV_TITLE}"
+  [ -z "${SERVER_CODE:-}" ] && set_state SERVER_CODE "$(server_code)"
+
+  # Self-recognition: when this server has no stored names (state.env
+  # lost, or a DB restored without it), do not create a new Worker + KV
+  # from scratch. The panel DB still has the clients, and the KV
+  # namespace that belongs to this server still carries its server:id
+  # — find it and adopt it, so the fixed address never changes.
+  if [ -z "${STORED_WORKER_NAME}" ]; then
+    local own_ns own_title own_sid own_code
+    if own_ns=$(find_own_namespace); then
+      own_title="${own_ns#* }"
+      own_ns="${own_ns%% *}"
+      own_sid=$(kv_get_value "${own_ns}" "server:id")
+      if [ -z "${own_sid}" ]; then
+        # Matched by server:code only: recover the full UUID from the
+        # local client whose code it is.
+        own_code=$(kv_get_value "${own_ns}" "server:code")
+        if [ -n "${own_code}" ]; then
+          own_sid=$(local_client_uuids | awk -F- -v c="${own_code}" '$1 == c { print; exit }')
+        fi
+      fi
+      WORKER_NAME="${own_title}"
+      KV_TITLE="${own_title}"
+      KV_NAMESPACE_ID="${own_ns}"
+      CLIENT_UUID="${own_sid:-${CLIENT_UUID}}"
+      SUB_SECRET=$(panel_sub_secret)
+      set_state WORKER_NAME "${WORKER_NAME}"
+      set_state KV_TITLE "${KV_TITLE}"
+      set_state KV_NAMESPACE_ID "${KV_NAMESPACE_ID}"
+      set_state CLIENT_UUID "${CLIENT_UUID}"
+      set_state SUB_SECRET "${SUB_SECRET}"
+      set_state SERVER_CODE "$(server_code)"
+      STORED_WORKER_NAME="${WORKER_NAME}"
+      STORED_KV_TITLE="${KV_TITLE}"
+      echo "found this server's existing Worker + KV on Cloudflare (server code $(server_code)) — reusing them, no new address."
+    fi
+  fi
 
   # Fresh deploy (no stored worker name): prompts that ask keep-or-change
   # for things the account already has (e.g. an existing subdomain)
@@ -942,25 +1122,10 @@ for n in d.get('result') or []:
   export KV_NAMESPACE_ID="${ns_id}"
   echo "KV namespace ready: ${ns_id}"
 
-  # Guard: one Worker + KV serves exactly one server. sync.py stamps
-  # each namespace with server:id (this install's CLIENT_UUID). If this
-  # namespace already belongs to another server, say so loudly instead
-  # of silently taking over its panel URL and subscriptions.
-  local kv_body kv_code existing_server
-  kv_body=$(curl -s --max-time 15 -w '\n%{http_code}' \
-    "${CF_API}/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${ns_id}/values/server:id" \
-    -H "Authorization: Bearer ${CF_API_TOKEN}" 2>/dev/null || echo "000")
-  kv_code=$(printf '%s' "${kv_body}" | tail -1)
-  existing_server=$(printf '%s' "${kv_body}" | head -n -1)
-  if [ "${kv_code}" = "200" ] && [ -n "${existing_server}" ] \
-     && [ -n "${CLIENT_UUID:-}" ] && [ "${existing_server}" != "${CLIENT_UUID}" ]; then
-    echo "WARNING: this KV namespace already belongs to another server (server:id ${existing_server})."
-    echo "Sharing one Worker + KV between servers mixes their panel URLs and subscriptions."
-    echo "Give this server its own names and re-run, e.g.:"
-    echo "  WORKER_NAME=sui-sub-2 KV_TITLE=sui-sub-2 sudo -E bash install.sh deploy-worker"
-    echo "Continuing with the shared namespace in 10s (Ctrl-C to stop)..."
-    sleep 10
-  fi
+  # Guard: one Worker + KV serves exactly one server. If this namespace
+  # already belongs to another server, stop — sharing it would mix the
+  # two servers' panel URLs and subscriptions.
+  guard_namespace_owner "${ns_id}" || return 1
 
   # Upload worker (multipart: metadata + module). The SUB_SECRET is sent
   # as a plain-text variable binding so the worker can require it in
@@ -1225,6 +1390,7 @@ print_save_block() {
   else
     echo "Panel (fixed): worker not deployed yet; get it with: sudo bash install.sh show"
   fi
+  echo "Server code: $(server_code)"
   if [ -n "${pu}" ]; then
     echo "Panel (internet, secret path): ${pu}${PANEL_BASE_PATH}"
   else
@@ -1256,6 +1422,7 @@ cmd_show() {
   else
     echo "Panel (fixed): worker not deployed yet (see README fallback)"
   fi
+  echo "Server code: $(server_code)"
   if [ -n "${pu}" ]; then
     echo "Panel (internet): ${pu}${PANEL_BASE_PATH:-/app/}"
   else

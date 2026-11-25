@@ -57,9 +57,11 @@ downstream re-reads them.
   the last "Requesting new quick Tunnel", so a stale URL is never
   reused);
 - the panel tunnel hostname from `panel-tunnel.log` → KV `panel:host`;
-- this install's identity (`CLIENT_UUID`) → KV `server:id`, so
-  `deploy-worker` can tell when a namespace already belongs to
-  another server (see README: Multiple servers);
+- this install's identity (`CLIENT_UUID`) → KV `server:id`, and its
+  short code (first 8 chars) → KV `server:code`, so `deploy-worker`
+  can tell when a namespace already belongs to another server — or
+  recognise this server's own namespace when state.env is gone (see
+  README: Multiple servers);
 - the panel's client-side routing, from **all three places** s-ui
   keeps it: `subJsonExt` (the subscription JSON extension), the
   `subJson` template, and the core `config` route/dns. Single-value
@@ -90,6 +92,34 @@ Two more mechanisms keep the sync honest:
   silent. The journal lines never print secrets: UUIDs are masked,
   the panel host is not repeated, and a failed KV write names the
   client by name, not by UUID.
+
+### Server identity (the server code)
+
+Every server has one short unique code: the first 8 hex characters of
+its identity UUID (`SERVER_CODE` in state.env, shown by `show` and in
+the SAVE block). The code is stamped into the KV namespace as
+`server:code` next to `server:id` (the full UUID), so **everything on
+Cloudflare for that server is tied to that code** — its Worker, its KV
+namespace, its subscription links. The identity lives in three places
+at once, so no single loss breaks it:
+
+- `state.env` on the server (CLIENT_UUID, SERVER_CODE, WORKER_NAME,
+  KV_TITLE, KV_NAMESPACE_ID);
+- the panel DB (the clients' UUIDs — the first client *is* the
+  identity — and the subURI setting, which carries the SUB_SECRET);
+- the KV namespace itself (`server:id` + `server:code`).
+
+A re-run reuses the stored names and namespace. When state.env has no
+stored names, `deploy-worker` recognises the server by itself before
+creating anything new: it reads the client UUIDs from the panel DB,
+scans the account's KV namespaces for one whose `server:id` (or
+`server:code`) matches, and adopts that Worker + KV — recovering the
+worker name (the namespace title), the namespace id, the client UUID
+and the SUB_SECRET (from the panel's subURI) — so the fixed address
+never changes. A requested Worker name that is taken by *this*
+server's own Worker is adopted the same way. And a namespace that
+already belongs to *another* server is a hard stop, not a warning:
+`deploy-worker` refuses to use it.
 
 ### Worker (`worker.js`, Cloudflare Workers, module format)
 One fixed `https://sui-sub.<subdomain>.workers.dev` address, three jobs:

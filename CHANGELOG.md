@@ -5,6 +5,22 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-25
 
+- **Server code: every server's Cloudflare identity.** Each server
+  now has one short unique code — the first 8 characters of its
+  identity UUID (`SERVER_CODE` in state.env, shown by `show` and in
+  the SAVE block) — stamped in KV as `server:code` next to
+  `server:id`, so everything on Cloudflare for that server is tied
+  to that code. A re-run reuses its stored Worker + KV, never creates
+  new ones. And if `state.env` is ever lost, `deploy-worker`
+  recognises the server by itself before creating anything new: it
+  scans the account's KV namespaces for one whose `server:id` (or
+  `server:code`) matches a client UUID in this panel's DB, and adopts
+  that Worker + KV — recovering the worker name, the namespace id,
+  the client UUID and the SUB_SECRET (from the panel's subURI) — so
+  the fixed address never changes. A requested Worker name taken by
+  this server's own Worker is adopted the same way. The old
+  warn-and-wait-10-seconds guard is now a hard stop: a namespace that
+  belongs to another server refuses the deploy outright.
 - **Real health check in `status`.** `run_checks` used to call a
   process "alive" and stop there. It now also fetches the Worker's
   `/health`, fetches this client's own `/sub` URL from the Worker

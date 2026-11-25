@@ -27,6 +27,12 @@ What is covered:
   panel via its tunnel, and the last sync state (fresh / error /
   stale / none); `backup_before_change` snapshots DB + state +
   sync-state.json and keeps only the last 5; `write_units` writes the
-  `sui-sync.path` unit watching both tunnel logs.
+  `sui-sync.path` unit watching both tunnel logs; the server code is
+  the first 8 chars of the identity UUID; `find_own_namespace` finds
+  this server's namespace by `server:id` (and falls back to
+  `server:code`); `worker_own_namespace` adopts our own worker and
+  refuses another server's; the namespace-owner guard allows ours
+  and stops on another server's; the SUB_SECRET is recovered from
+  the panel's subURI.
 
 Add a test before changing the behaviour it covers.
