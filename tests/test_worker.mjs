@@ -77,6 +77,93 @@ assert.deepEqual(plain.route.rules[1], {
   rule_set: ["site-ir", "geoip-ir"], outbound: "direct",
 });
 
+// geoip-ir comes from this worker itself (not GitHub), downloaded
+// directly — no proxy detour, so startup works while the tunnel is down.
+// Checked with panel routing merged in and without it.
+for (const p of [profile, plain]) {
+  const geo = p.route.rule_set.find((rs) => rs.tag === "geoip-ir");
+  assert.equal(geo.url, "https://w/geoip-ir.srs");
+  assert.equal(geo.http_client, "direct-http");
+  assert.ok(p.http_clients.some((c) => c.tag === "direct-http"), "direct-http client exists");
+  assert.ok(!JSON.stringify(p).includes("raw.githubusercontent.com"), "no GitHub URL left in the profile");
+}
+
+// --- /geoip-ir.srs: served from the worker, cached from GitHub ---
+// Minimal Cache API stand-in: match() honours the stored max-age, like
+// Cloudflare's caches.default does; put() records it from Cache-Control.
+function fakeCaches() {
+  const store = new Map();
+  const maxAgeMs = (res) => {
+    const m = /max-age=(\d+)/.exec(res.headers.get("cache-control") || "");
+    return m ? Number(m[1]) * 1000 : 0;
+  };
+  return {
+    default: {
+      async match(req) {
+        const e = store.get(req.url);
+        // >= so max-age=0 expires at once (as on Cloudflare's edge).
+        if (!e || Date.now() >= e.expiresAt) return undefined;
+        return new Response(e.body, { headers: e.headers });
+      },
+      async put(req, res) {
+        const headers = {};
+        res.headers.forEach((v, k) => { headers[k] = v; });
+        store.set(req.url, {
+          body: Buffer.from(await res.arrayBuffer()),
+          headers,
+          expiresAt: Date.now() + maxAgeMs(res),
+        });
+      },
+    },
+  };
+}
+
+const realFetch = globalThis.fetch;
+const srsReq = () => new Request("https://w/geoip-ir.srs");
+const srsEnv = { SUB_KV: kv({}) };
+
+// Cache hit: the file is served without touching GitHub at all.
+globalThis.caches = fakeCaches();
+await globalThis.caches.default.put(srsReq(), new Response("CACHED-BYTES", {
+  headers: { "content-type": "application/octet-stream", "cache-control": "public, max-age=86400" },
+}));
+globalThis.fetch = async () => { throw new Error("must not fetch on a cache hit"); };
+let r = await worker.fetch(srsReq(), srsEnv, {});
+assert.equal(r.status, 200);
+assert.equal(await r.text(), "CACHED-BYTES");
+assert.equal(r.headers.get("content-type"), "application/octet-stream");
+
+// Cache miss: fetched from GitHub once, stored, then served from cache.
+globalThis.caches = fakeCaches();
+globalThis.fetch = async () => new Response("GITHUB-BYTES", { status: 200 });
+r = await worker.fetch(srsReq(), srsEnv, {});
+assert.equal(r.status, 200);
+assert.equal(await r.text(), "GITHUB-BYTES");
+globalThis.fetch = async () => { throw new Error("must not fetch after the file is cached"); };
+r = await worker.fetch(srsReq(), srsEnv, {});
+assert.equal(await r.text(), "GITHUB-BYTES");
+
+// GitHub down, fresh copy expired: the long-lived stale copy is served.
+globalThis.caches = fakeCaches();
+await globalThis.caches.default.put(srsReq(), new Response("FRESH-BYTES", {
+  headers: { "content-type": "application/octet-stream", "cache-control": "public, max-age=0" },
+}));
+await globalThis.caches.default.put(new Request("https://w/geoip-ir.srs?stale=1"), new Response("STALE-BYTES", {
+  headers: { "content-type": "application/octet-stream", "cache-control": "public, max-age=2592000" },
+}));
+globalThis.fetch = async () => { throw new Error("github unreachable"); };
+r = await worker.fetch(srsReq(), srsEnv, {});
+assert.equal(r.status, 200);
+assert.equal(await r.text(), "STALE-BYTES");
+
+// GitHub down and nothing cached: 502, the same failure as before.
+globalThis.caches = fakeCaches();
+globalThis.fetch = async () => new Response("bad gateway", { status: 502 });
+r = await worker.fetch(srsReq(), srsEnv, {});
+assert.equal(r.status, 502);
+globalThis.fetch = realFetch;
+delete globalThis.caches;
+
 // /health answers ok.
 const health = await worker.fetch(
   new Request("https://w/health"),

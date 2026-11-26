@@ -5,6 +5,16 @@ Dates are in Asia/Tehran time.
 
 ## 2026-11-25
 
+- **geoip-ir is served by the Worker itself.** `GET /geoip-ir.srs`
+  fetches the Iran IP list from GitHub once and keeps it in
+  `caches.default` (fresh 24 h, stale copy 30 d); the profile points
+  the `geoip-ir` rule-set at the Worker and downloads it directly
+  (`direct-http`, no proxy detour), so sing-box startup no longer
+  depends on GitHub being reachable at that moment or on the tunnel
+  being up. Before this, the phone downloaded the file from GitHub
+  through the VPN, so a server reboot or a GitHub 502 made sing-box
+  refuse to start at all (seen 2026-11-25 after rebooting server 2).
+
 - **filtersui version + banner + `version` command.** The installer
   has its own version now (`FILTERSUI_VERSION="1.0.0"`, semver: PATCH
   for fixes, MINOR for features, MAJOR for breaking changes).

@@ -181,7 +181,7 @@ already belongs to *another* server is a hard stop, not a warning:
 `deploy-worker` refuses to use it.
 
 ### Worker (`worker.js`, Cloudflare Workers, module format)
-One fixed `https://sui-sub.<subdomain>.workers.dev` address, three jobs:
+One fixed `https://sui-sub.<subdomain>.workers.dev` address, four jobs:
 
 1. `GET /health` → `ok` (liveness probe).
 2. `GET /sub/<secret>/<uuid-or-name>` → the base64 subscription from
@@ -193,7 +193,22 @@ One fixed `https://sui-sub.<subdomain>.workers.dev` address, three jobs:
    merges in (bypass first; panel rules with an unknown outbound or
    an undefined rule-set are dropped). Without a `SUB_SECRET` variable
    set, the legacy `/sub/<id>` form also works.
-3. Any other path → reverse-proxy to the panel: it fetches
+3. `GET /geoip-ir.srs` → the Iran IP list for the profile's `geoip-ir`
+   rule-set, served from this Worker instead of GitHub: it fetches the
+   file from `raw.githubusercontent.com` once and keeps it in
+   `caches.default` (fresh copy 24 h, long-lived stale copy 30 d). The
+   profile points the rule-set at this URL and downloads it with the
+   `direct-http` client (no proxy detour), so a client's sing-box
+   startup no longer depends on GitHub being reachable at that moment
+   or on the tunnel being up — the phone already reaches this
+   workers.dev host directly (it fetches the subscription here). If
+   GitHub is unreachable when the fresh copy expires, the stale copy
+   is served; only with no copy at all does the client get a 502.
+   The file is public data (Iran IP ranges), so this path needs no
+   secret. (Before this, the phone downloaded it from GitHub through
+   the VPN, so a server reboot or a GitHub 502 made sing-box refuse
+   to start at all.)
+4. Any other path → reverse-proxy to the panel: it fetches
    `https://<panel:host><path>` and rewrites `Origin`/`Referer` to the
    panel hostname, because s-ui's SameOrigin guard rejects POSTs whose
    Origin host differs from Host (this is what makes panel *login*

@@ -22,7 +22,12 @@ What is covered:
 - `test_worker.mjs` — the built-in Iran bypass stays first; a valid
   panel block/direct rule applies; a rule naming an unknown outbound
   or an undefined rule-set is dropped; the panel rule-set merges in;
-  `/health` answers `ok`; a plain user-agent still gets the base64 link.
+  `/health` answers `ok`; a plain user-agent still gets the base64 link;
+  the profile's `geoip-ir` points at this worker (`/geoip-ir.srs`,
+  `direct-http`, no GitHub URL left); `/geoip-ir.srs` is served from
+  the cache without touching GitHub, fetched + stored on a miss, the
+  stale copy is served when GitHub is down and the fresh copy expired,
+  and a 502 is returned when GitHub is down and nothing is cached.
 - `test_install.sh` — `run_checks` reports the worker `/sub`, the
   panel via its tunnel, and the last sync state (fresh / error /
   stale / none); `backup_before_change` snapshots DB + state +

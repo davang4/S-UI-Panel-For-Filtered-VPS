@@ -392,7 +392,17 @@ likewise dropped.
 
 This list is Iran-specific. If you need a different country's split,
 edit the `domain_suffix` list in `worker.js` (`site-ir` rule-set) and
-the `geoip-ir` URL, then `install.sh deploy-worker`.
+the `GEOIP_SRS_URL` constant, then `install.sh deploy-worker`.
+
+The `geoip-ir` IP list is served by the Worker itself
+(`GET /geoip-ir.srs`): it fetches the file from GitHub once and keeps
+it on Cloudflare's edge cache (fresh 24 h, stale copy 30 d), so a
+client's sing-box startup no longer depends on GitHub being reachable
+at that moment — or on the tunnel being up, since the phone downloads
+the rule-set directly from the same workers.dev host as the
+subscription. Before this, the phone downloaded it from GitHub
+through the VPN, so a server reboot (tunnel still down) or a GitHub
+502 made sing-box refuse to start at all.
 
 **Hiddify / v2rayNG only receive a base64 vless link, which carries
 no routing at all — no panel setting can reach them.** For those apps,

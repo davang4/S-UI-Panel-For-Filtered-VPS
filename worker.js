@@ -15,6 +15,10 @@
 // generates the secret, deploys it as a worker variable, and writes it
 // into the panel's subURI, so panel links carry it automatically.
 // GET /health      -> plain "ok"
+// GET /geoip-ir.srs -> the geoip-ir rule-set, served from this worker
+//                     (fetched from GitHub once, cached on the edge —
+//                     see serveGeoipSrs). The file is public data (Iran
+//                     IP ranges), so this path needs no secret.
 // Any other path   -> reverse-proxy to the s-ui panel's current quick-tunnel
 //                     hostname (KV key panel:host, written by sync.py on the VPS).
 //                     The panel itself enforces its secret webPath and returns
@@ -135,8 +139,69 @@ function applyPanelRoutes(profile, ext, name) {
   }
 }
 
+// The Iran IP list (geoip-ir.srs) used to be downloaded by every client
+// straight from GitHub at startup — through the VPN (proxy detour), so a
+// server reboot (tunnel still down) or a GitHub 502 made sing-box refuse
+// to start at all. This worker serves the file itself instead: it fetches
+// it from GitHub once and keeps it on Cloudflare's edge cache (Cache API,
+// fresh 24 h), so the phone downloads it from the same workers.dev host
+// as the subscription — which the phone already reaches directly, without
+// the VPN — and startup no longer depends on GitHub or on the tunnel.
+// If GitHub is unreachable when the fresh copy expires, the long-lived
+// stale copy (30 d) is served instead; only with no copy at all does the
+// client get a 502 (the same failure as before, but only once — after a
+// single good download the phone keeps its own cached copy too).
+const GEOIP_SRS_URL = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ir.srs";
+const GEOIP_SRS_PATH = "/geoip-ir.srs";
+const GEOIP_CACHE_TTL = 86400;       // 24 h: the fresh copy
+const GEOIP_STALE_TTL = 30 * 86400;  // 30 d: the stale fallback copy
+
+async function serveGeoipSrs(url) {
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  const key = new Request(url.origin + GEOIP_SRS_PATH);
+  const staleKey = new Request(url.origin + GEOIP_SRS_PATH + "?stale=1");
+  if (cache) {
+    const hit = await cache.match(key);
+    if (hit) return hit;
+  }
+  let upstream = null;
+  try {
+    upstream = await fetch(GEOIP_SRS_URL, { headers: { "user-agent": "filtersui-worker/1.0" } });
+  } catch {
+    upstream = null;
+  }
+  if (upstream && upstream.ok) {
+    const body = await upstream.arrayBuffer();
+    const fresh = new Response(body, {
+      headers: {
+        "content-type": "application/octet-stream",
+        "cache-control": "public, max-age=" + GEOIP_CACHE_TTL,
+      },
+    });
+    if (cache) {
+      try {
+        await cache.put(key, fresh.clone());
+        await cache.put(staleKey, new Response(body, {
+          headers: {
+            "content-type": "application/octet-stream",
+            "cache-control": "public, max-age=" + GEOIP_STALE_TTL,
+          },
+        }));
+      } catch {
+        // A cache write must never break serving the file.
+      }
+    }
+    return fresh;
+  }
+  if (cache) {
+    const stale = await cache.match(staleKey);
+    if (stale) return stale;
+  }
+  return new Response("geoip-ir rule-set unavailable\n", { status: 502 });
+}
+
 // Build a full sing-box client profile from one base64-encoded vless:// link.
-function singboxProfile(b64, panelExt) {
+function singboxProfile(b64, panelExt, origin) {
   try {
     const link = atob(b64.trim()).trim();
     const u = new URL(link);
@@ -150,7 +215,11 @@ function singboxProfile(b64, panelExt) {
       log: { level: "info" },
       // sing-box 1.14: rule-set downloads go through a named HTTP client,
       // not the deprecated download_detour (removed in 1.16).
-      http_clients: [{ tag: "proxy-http", detour: name }],
+      // "direct-http" has no detour: it downloads straight from the
+      // internet, which is how the geoip-ir rule-set is fetched from
+      // this worker itself (see serveGeoipSrs) — the download must not
+      // depend on the VPN being up.
+      http_clients: [{ tag: "proxy-http", detour: name }, { tag: "direct-http" }],
       dns: {
         // New (sing-box >= 1.12) DNS server format: legacy address strings
         // were removed in 1.14, so servers must carry an explicit "type".
@@ -198,7 +267,13 @@ function singboxProfile(b64, panelExt) {
         // does exist). Iranian traffic goes direct, never via the VPN.
         rule_set: [
           { tag: "site-ir", type: "inline", rules: [{ domain_suffix: [".ir", "digikala.com", "aparat.com", "filimo.com", "torob.com", "sheypoor.com", "varzesh3.com", "tgju.org", "snapptrip.com", "flightio.com", "zarinpal.com", "tamasha.com", "telewebion.com", "bale.ai", "gap.im", "igap.net", "eitaa.com"] }] },
-          { tag: "geoip-ir", type: "remote", format: "binary", url: "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ir.srs", http_client: "proxy-http" },
+          // Served by this worker itself (serveGeoipSrs), downloaded
+          // directly — the phone already reaches this workers.dev host
+          // without the VPN (it fetches the subscription here), so the
+          // rule-set download works even while the server is rebooting
+          // and the tunnel is down. (An explicit http_client also keeps
+          // applyPanelRoutes from assigning it the proxy client.)
+          { tag: "geoip-ir", type: "remote", format: "binary", url: origin + GEOIP_SRS_PATH, http_client: "direct-http" },
         ],
         // sing-box >= 1.11 rule actions: the legacy "dns" and "block"
         // special outbounds were removed in 1.13, so DNS is intercepted
@@ -227,6 +302,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
       return new Response("ok\n", { headers: { "content-type": "text/plain" } });
+    }
+    if (url.pathname === GEOIP_SRS_PATH) {
+      return serveGeoipSrs(url);
     }
     const m = url.pathname.match(/^\/sub\/([^/]+)(?:\/([^/]+))?$/);
     if (m) {
@@ -263,7 +341,7 @@ export default {
         } catch {
           panelExt = null;
         }
-        const profile = singboxProfile(value, panelExt);
+        const profile = singboxProfile(value, panelExt, url.origin);
         if (profile) {
           return new Response(JSON.stringify(profile), {
             headers: {
