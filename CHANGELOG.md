@@ -3,6 +3,28 @@
 All notable changes to this project, in reverse chronological order.
 Dates are in Asia/Tehran time.
 
+## 2026-11-26
+
+- **Port-squatter guard (filtersui 1.1.0).** A stray s-ui process
+  holding the panel port used to make `sui-panel` crash-loop silently
+  (server 2, 2026-11-25: restart counter past 325, secret-path login
+  served by the stray instance instead of the real panel). Now
+  `status` names the squatter (`FAIL panel port 2095 held by another
+  process: 821 (sui)`), and `install` / `update-sui` refuse to
+  restart the panel while one holds the port, telling you the exact
+  fix (`sudo fuser -k 2095/tcp`, then re-run). Nothing is killed
+  automatically — killing is always the operator's call.
+- **Client names with a space (or any special character) sync now.**
+  The sync PUT the KV key `sub:<name>` into the request URL raw, so
+  a name like "Heydari colocrossing" made the request itself invalid
+  ("URL can't contain control characters") and aborted the whole sync
+  — the new client never reached KV and its subscription did not work.
+  The key is now percent-encoded in the URL (`sub:Heydari%20…`); the
+  key stored in KV keeps the original name, so the Worker's lookup is
+  unchanged. Also, one client's PUT failing no longer blocks the rest:
+  the others still sync, the run still reports failure, and the old
+  state is kept so the next run retries the failed key.
+
 ## 2026-11-25
 
 - **geoip-ir is served by the Worker itself.** `GET /geoip-ir.srs`

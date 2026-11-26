@@ -133,6 +133,43 @@ built-in DNS (DoH `1.1.1.1` via proxy, local for `.ir`) returns.
   KV `SUB_KV`, enable workers.dev). The panel + tunnel keep working
   without the Worker; only the fixed subscription URL is missing.
 
+## Panel crash-loops / won't start (`bind: address already in use`)
+
+If `sui-panel` keeps restarting (check with
+`systemctl status sui-panel` — restart counter climbing) and the
+journal says `bind: address already in use` on the panel port, a
+stray s-ui process is holding the port — e.g. a manual start, or an
+old install's autostart — and the systemd panel can never bind it.
+`status` now names it directly:
+
+```
+FAIL panel port 2095 held by another process: 821 (sui)
+```
+
+Fix it the same way it was fixed on server 2 (2026-11-25): kill the
+stray process, then restart the panel — the real panel and its DB
+are untouched:
+
+```bash
+sudo fuser -k 2095/tcp
+sudo systemctl restart sui-panel
+sudo filtersui status   # all checks should PASS
+```
+
+`install` and `update-sui` refuse to restart the panel while a
+squatter holds the port, and print the same fix instead of looping.
+To find what starts the stray process after a reboot, check for a
+duplicate unit or a `@reboot` cron entry:
+
+```bash
+systemctl list-unit-files | grep -i sui
+sudo crontab -l 2>/dev/null | grep -i sui
+```
+
+Anything besides `sui-panel` and the tunnels is the stray one's
+source; remove it (an old s-ui can be uninstalled) so it cannot
+come back.
+
 ## Hysteria2
 
 Hysteria2 cannot pass a Cloudflare tunnel (UDP/QUIC). It only works
@@ -205,6 +242,17 @@ python3 -c "import sqlite3; c=sqlite3.connect('db/s-ui.db'); print('clients:', c
   on this server, newest first, and restores the one you pick by
   number. Give a path only for a backup copied in from outside
   (e.g. after moving to a new server).
+
+## A new client does not sync (subscription does not work)
+
+If `status` shows `FAIL last sync error: KV PUT failed for <name>:
+[{'code': -1, 'message': "URL can't contain control characters..."}]`,
+the client name contains a space (or another special character) and
+the sync could not PUT its KV key. Fixed in the repo (sync.py
+percent-encodes the key in the request URL; one failing client no
+longer blocks the others) — update the installer and re-run `install`,
+then `sync-now`. Workaround without updating: rename the client in
+the panel to a name without a space and run `sync-now`.
 
 ## `status` shows FAIL on the last sync
 

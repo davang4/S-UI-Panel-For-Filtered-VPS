@@ -22,6 +22,7 @@ import sync  # noqa: E402
 
 UUID1 = "5c0b21ef-178a-4b3e-b0f3-4a813e7073ee"
 UUID2 = "6d1c32f0-289b-5c4f-c1g4-5b924f8184ff".replace("g", "0")
+UUID3 = "7e2d43a1-390b-6d5e-d2e5-6c035f9296ff"
 
 
 def make_env(tmp):
@@ -241,6 +242,45 @@ class RunStateTests(unittest.TestCase):
         state = json.load(open(sync.HASHFILE))
         self.assertIn("davang", state["last_error"])
         self.assertNotIn(UUID1, state["last_error"])
+
+    def test_name_with_space_is_url_encoded(self):
+        # A client name with a space ("Heydari colocrossing") used to
+        # make the request itself invalid — "URL can't contain control
+        # characters" — and abort the whole sync, so the new client
+        # never reached KV. The key stored in KV keeps the space; only
+        # the request URL is percent-encoded.
+        con = sqlite3.connect(self.db)
+        con.execute("INSERT INTO clients VALUES (?,?,?,?,?,?,?)",
+                    ("Heydari colocrossing", 1,
+                     json.dumps({"vless": {"uuid": UUID3}}), 0, 0, 0, 0))
+        con.commit()
+        con.close()
+        code, _ = self.run_main([])
+        self.assertEqual(code, 0)
+        paths = [p for p, _ in self.calls]
+        self.assertTrue(any("values/sub:Heydari%20colocrossing" in p
+                            for p in paths),
+                        "spaced name must be percent-encoded in the PUT URL")
+        self.assertFalse(any("Heydari colocrossing" in p for p in paths),
+                         "no raw space may reach the request URL")
+
+    def test_one_failing_key_does_not_block_the_others(self):
+        # One client's PUT failing must not abort the sync for the
+        # rest: the others still sync, the run still reports failure,
+        # and the old state is kept so the next run retries it.
+        self.fail_key = "values/sub:" + UUID2
+        code, _ = self.run_main([])
+        self.assertEqual(code, 1)
+        paths = [p for p, _ in self.calls]
+        self.assertTrue(any(p.endswith("values/sub:" + UUID1)
+                            for p in paths))
+        self.assertTrue(any(p.endswith("values/sub:davang")
+                            for p in paths))
+        self.assertTrue(any(p.endswith("values/sub:friend")
+                            for p in paths))
+        state = json.load(open(sync.HASHFILE))
+        self.assertIn("friend", state["last_error"])
+        self.assertNotIn("hash", state)
 
     def test_no_hostname_records_error(self):
         with open(sync.TLOG, "w"):

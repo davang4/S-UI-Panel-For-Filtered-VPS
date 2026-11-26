@@ -249,6 +249,16 @@ def cf_request(env, method, path, body=None, attempts=3):
     return last
 
 
+def sub_key_path(ns, key):
+    # A KV key is a URL path segment: percent-encode it. A client name
+    # with a space (or any other special character) otherwise makes the
+    # request itself invalid — "URL can't contain control characters" —
+    # and the whole sync aborts, so the new client never reaches KV.
+    # The key stored in KV keeps the original characters; only the URL
+    # is encoded.
+    return f"{ns}/values/sub:{urllib.parse.quote(key, safe='')}"
+
+
 def _mask(value, keep=8):
     # Shorten a credential for log output: first `keep` chars + "…".
     # The sync timer's stdout goes to the systemd journal, a persistent
@@ -387,19 +397,26 @@ def main():
             return 1
 
     ns = f"/accounts/{env['CF_ACCOUNT_ID']}/storage/kv/namespaces/{env['KV_NAMESPACE_ID']}"
+    first_err = None
     for key, value in list(payload.items()) + list(name_keys.items()):
-        r = cf_request(env, "PUT", f"{ns}/values/sub:{key}", value)
+        r = cf_request(env, "PUT", sub_key_path(ns, key), value)
         if not r.get("success"):
+            # One bad client must not block the rest: record the
+            # failure, keep syncing the others, and return 1 with the
+            # OLD state at the end so the next run retries it.
             err = f"KV PUT failed for {describe(key)}: {r.get('errors')}"
             print(f"sync: {err}")
-            save_run_state(prev, err)
-            return 1
+            if first_err is None:
+                first_err = err
+    if first_err is not None:
+        save_run_state(prev, first_err)
+        return 1
     for uuid in prev.get("uuids", []):
         if uuid not in payload:
-            cf_request(env, "DELETE", f"{ns}/values/sub:{uuid}")
+            cf_request(env, "DELETE", sub_key_path(ns, uuid))
     for nm in prev.get("names", []):
         if nm not in name_keys:
-            cf_request(env, "DELETE", f"{ns}/values/sub:{nm}")
+            cf_request(env, "DELETE", sub_key_path(ns, nm))
     if server_id and prev.get("server_id") != server_id:
         r = cf_request(env, "PUT", f"{ns}/values/server:id", server_id)
         if not r.get("success"):

@@ -17,7 +17,10 @@ What is covered:
   (`subJsonExt`, `subJson`, `config`) with no Iran gate; single-value
   priority; secrets masked in journal lines (no full UUID, no tunnel
   hostname); a failed KV write names the client by name; Cloudflare
-  calls retried with backoff, 403/404 not retried; every run records
+  calls retried with backoff, 403/404 not retried; a client name with
+  a space is percent-encoded in the KV PUT URL (the stored key keeps
+  the space); one failing client does not block the others, and the
+  old state is kept so the next run retries it; every run records
   `last_run` + `last_error`; `--dry-run` writes no state.
 - `test_worker.mjs` — the built-in Iran bypass stays first; a valid
   panel block/direct rule applies; a rule naming an unknown outbound
