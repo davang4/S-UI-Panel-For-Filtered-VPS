@@ -121,7 +121,7 @@ type the command name — and the menu comes back after each action
 until you pick 0. A number also works as a direct argument
 (`sudo filtersui 3` runs `status`), and the direct commands work too.
 The menu is in English, and `filtersui` has its own version
-(`FILTERSUI_VERSION`, currently 1.0.0) — `sudo filtersui version`
+(`FILTERSUI_VERSION`, currently 1.1.0) — `sudo filtersui version`
 prints it together with the s-ui and cloudflared versions:
 
 ```bash

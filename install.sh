@@ -25,7 +25,7 @@ CFD_VERSION="2026.11.2"
 # release: PATCH for fixes, MINOR for new features, MAJOR for breaking
 # changes. Shown by the menu banner, `show`, `status`, `help`, the
 # SAVE block, and the `version` command.
-FILTERSUI_VERSION="1.0.0"
+FILTERSUI_VERSION="1.1.0"
 if [ -n "${SUI_VERSION:-}" ]; then
   SUI_URL="https://github.com/alireza0/s-ui/releases/download/v${SUI_VERSION}/s-ui-linux-amd64.tar.gz"
 else
@@ -1279,9 +1279,46 @@ sync_state_info() {
   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(f\"{d.get('last_run','')}|{d.get('last_error') or ''}\")" "${DIR}/sync-state.json" 2>/dev/null
 }
 
+panel_port_squatter() {
+  # Prints "<pid> (<name>)" for each process OTHER than the sui-panel
+  # service listening on PANEL_PORT, one per line; prints nothing and
+  # returns 1 when the port is held only by the service (or by nobody).
+  # A stray s-ui — a manual start, or an old install's autostart —
+  # binds the port first, so the systemd panel crash-loops with
+  # "bind: address already in use" instead of starting (server 2,
+  # 2026-11-25: restart counter past 325 before anyone saw the cause).
+  # Finding it here turns a silent crash-loop into one named line.
+  # Needs root to see other processes' pids; without it, nothing is
+  # reported and the caller treats the port as clean.
+  command -v ss >/dev/null 2>&1 || return 1
+  local svc_pid listeners line pid name found
+  svc_pid=$(systemctl show -p MainPID --value sui-panel 2>/dev/null || echo 0)
+  if [ -z "${svc_pid}" ]; then svc_pid=0; fi
+  listeners=$(ss -tlnp 2>/dev/null | grep -E "[:.]${PANEL_PORT}[[:space:]]" || true)
+  if [ -z "${listeners}" ]; then return 1; fi
+  found=0
+  while IFS= read -r line; do
+    pid=$(printf '%s' "${line}" | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+    if [ -z "${pid}" ]; then continue; fi
+    if [ "${pid}" = "${svc_pid}" ]; then continue; fi
+    name=$(printf '%s' "${line}" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')
+    printf '%s (%s)\n' "${pid}" "${name:-unknown}"
+    found=1
+  done <<EOF
+${listeners}
+EOF
+  if [ "${found}" = "1" ]; then return 0; else return 1; fi
+}
+
 run_checks() {
   echo "----- checks -----"
   if systemctl is-active --quiet sui-panel; then echo "PASS panel service active"; else echo "FAIL panel service not active"; fi
+  local sq
+  if sq=$(panel_port_squatter); then
+    echo "FAIL panel port ${PANEL_PORT} held by another process: ${sq} — the panel cannot start while it holds the port (kill it, then: systemctl restart sui-panel)"
+  else
+    echo "PASS panel port ${PANEL_PORT} not held by another process"
+  fi
   if systemctl is-active --quiet sui-tunnel; then echo "PASS tunnel service active"; else echo "FAIL tunnel service not active"; fi
   if systemctl is-active --quiet sui-panel-tunnel; then echo "PASS panel tunnel service active"; else echo "FAIL panel tunnel service not active"; fi
   local code
@@ -1367,6 +1404,12 @@ cmd_install() {
   write_units
   : >> "${TLOG}"
   : >> "${PTLOG}"
+  # A stray process on the panel port would make the panel crash-loop
+  # instead of starting; stop here with the fix instead of looping.
+  local sq
+  if sq=$(panel_port_squatter); then
+    die "panel port ${PANEL_PORT} is held by another process: ${sq}. Kill it first (sudo fuser -k ${PANEL_PORT}/tcp), then re-run install."
+  fi
   # restart (not just enable --now) so a changed webPath takes effect on re-run
   systemctl enable sui-panel >/dev/null 2>&1 || true
   systemctl restart sui-panel >/dev/null 2>&1 || die "failed to start sui-panel"
@@ -1534,7 +1577,12 @@ latest_sui_version() {
 cmd_update_sui() {
   need_root update-sui
   load_state
-  local old_ver new_ver target backup ans
+  local old_ver new_ver target backup ans sq
+  # A stray process on the panel port would make the panel crash-loop
+  # on restart; refuse before downloading anything, with the fix.
+  if sq=$(panel_port_squatter); then
+    die "panel port ${PANEL_PORT} is held by another process: ${sq}. Kill it first (sudo fuser -k ${PANEL_PORT}/tcp), then re-run update-sui."
+  fi
   old_ver=$(sui_version_of "$("${BIN}/sui" -v 2>/dev/null | head -1)")
   echo "current: ${old_ver:-unknown}"
   # Never re-install the same version: check first, download nothing,

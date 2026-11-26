@@ -33,7 +33,7 @@ extract_fn() {
 }
 FN_TMP="${TMP}/fns.sh"
 : > "${FN_TMP}"
-for fn in die sync_state_info run_checks backup_before_change write_units \
+for fn in die sync_state_info panel_port_squatter run_checks backup_before_change write_units \
           _url_from_log tunnel_url panel_tunnel_url server_code \
           local_client_uuids panel_sub_secret kv_get_value \
           find_own_namespace worker_own_namespace guard_namespace_owner; do
@@ -113,6 +113,37 @@ check "health: stale sync flagged" "${out}" "FAIL last sync stale:"
 rm -f "${DIR}/sync-state.json"
 out="$(run_checks)"
 check "health: no sync yet is a skip" "${out}" "SKIP last sync state (no sync has run yet)"
+
+# ---- panel_port_squatter: a stray sui on the panel port ----
+# (server 2, 2026-11-25: pid 821 held 2095, panel crash-looped 325+ times)
+SS_OUT=""
+ss() { printf '%s\n' "${SS_OUT}"; }
+PANEL_PORT=2095
+SS_OUT='LISTEN 0 4096 127.0.0.1:2095 0.0.0.0:* users:(("sui",pid=821,fd=7))'
+out=$(panel_port_squatter); code=$?
+check "squatter: stray sui on the panel port is named" "${out}" "821 (sui)"
+[ "${code}" = "0" ] && ok "squatter: exit 0 when one is found" || bad "squatter exit code (got ${code})"
+# The service itself holding the port is not a squatter.
+systemctl() { if [[ "$*" == *show* ]]; then echo 1234; fi; return 0; }
+SS_OUT='LISTEN 0 4096 127.0.0.1:2095 0.0.0.0:* users:(("sui",pid=1234,fd=7))'
+out=$(panel_port_squatter); code=$?
+[ -z "${out}" ] && [ "${code}" = "1" ] && ok "squatter: the service itself is not a squatter" \
+  || bad "squatter: service pid flagged (out=${out} code=${code})"
+# Nothing listening: nothing reported.
+SS_OUT=""
+out=$(panel_port_squatter); code=$?
+[ -z "${out}" ] && [ "${code}" = "1" ] && ok "squatter: free port reports nothing" \
+  || bad "squatter: free port (out=${out} code=${code})"
+# status names the squatter instead of only saying the panel is down.
+systemctl() { return 0; }
+SS_OUT='LISTEN 0 4096 *:2095 0.0.0.0:* users:(("sui",pid=821,fd=7))'
+now=$(date +%s)
+echo "{\"last_run\": ${now}, \"last_error\": null}" > "${DIR}/sync-state.json"
+out="$(run_checks)"
+check "health: squatter named in status" "${out}" "FAIL panel port 2095 held by another process: 821 (sui)"
+SS_OUT=""
+PANEL_PORT=12095
+systemctl() { return 0; }
 
 # ---- write_units: path unit ----
 write_units
@@ -367,7 +398,7 @@ LATEST_VER="1.6.8"
 out=$(cmd_update_sui </dev/null 2>&1); code=$?
 check "update-sui: already latest does nothing" "${out}" "already the latest version"
 check_not "update-sui: already latest downloads nothing" "$(cat "${TMP}/upd_calls")" "downloaded"
-check_not "update-sui: already latest restarts nothing" "$(cat "${TMP}/upd_calls")" "systemctl"
+check_not "update-sui: already latest restarts nothing" "$(cat "${TMP}/upd_calls")" "systemctl restart"
 : > "${TMP}/upd_calls"
 LATEST_VER="1.7.0"; NEW_VER="1.7.0"
 out=$(cmd_update_sui </dev/null 2>&1); code=$?
@@ -381,7 +412,17 @@ NEW_VER="1.6.8"
 out=$(cmd_update_sui </dev/null 2>&1); code=$?
 check "update-sui: same version after download does nothing" "${out}" "same as installed"
 [ ! -f "${BIN}/sui.new" ] && ok "update-sui: same-version download discarded" || bad "update-sui: sui.new left behind"
-check_not "update-sui: same version restarts nothing" "$(cat "${TMP}/upd_calls")" "systemctl"
+check_not "update-sui: same version restarts nothing" "$(cat "${TMP}/upd_calls")" "systemctl restart"
+# A squatter on the panel port stops update-sui before anything is downloaded.
+SS_OUT='LISTEN 0 4096 127.0.0.1:12095 0.0.0.0:* users:(("sui",pid=821,fd=7))'
+: > "${TMP}/upd_calls"
+mk_fake_sui "1.6.8"
+LATEST_VER="1.7.0"; NEW_VER="1.7.0"
+out=$(cmd_update_sui </dev/null 2>&1); code=$?
+check "update-sui: squatter stops the update" "${out}" "held by another process: 821 (sui)"
+check_not "update-sui: squatter downloads nothing" "$(cat "${TMP}/upd_calls")" "downloaded"
+[ "${code}" != "0" ] && ok "update-sui: squatter exits non-zero" || bad "update-sui: squatter exit 0"
+SS_OUT=""
 : > "${TMP}/upd_calls"
 mk_fake_sui "1.6.8"
 LATEST_VER="2.0.0"; NEW_VER="2.0.0"

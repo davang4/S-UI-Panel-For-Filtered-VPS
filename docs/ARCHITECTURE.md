@@ -121,10 +121,10 @@ first (`backup_before_change`, last 5 kept), so they are reversible.
 ### Version and banner
 
 `filtersui` has its own version: `FILTERSUI_VERSION` at the top of
-install.sh (semver, currently 1.0.0; PATCH for fixes, MINOR for new
+install.sh (semver, currently 1.1.0; PATCH for fixes, MINOR for new
 features, MAJOR for breaking changes). `sudo filtersui version`
 prints it together with the s-ui and cloudflared versions, and the
-compact banner (`◈ filtersui v1.0.0`) is the last line of `show`,
+compact banner (`◈ filtersui v1.1.0`) is the last line of `show`,
 `status` and the SAVE block. The full banner (`print_banner`) is a
 funnel drawn with lines over a box whose width is computed from the
 version, so it stays aligned when the version grows.
